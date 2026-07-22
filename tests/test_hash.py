@@ -114,11 +114,33 @@ class TestImageSpecHash:
         h = spec.content_hash(client=None)
         assert len(h) == 64  # works, doesn't raise
 
-    def test_distro_parameter_sets_context(self) -> None:
-        """from_registry(distro='alpine') doesn't change hash but enables correct rendering."""
+    def test_distro_inferred_keeps_hash_stable(self) -> None:
+        """Leaving distro inferred (the default) does not change the hash."""
+        a = ImageSpec.from_registry("base", pin_digest=False).apt_install("git")
+        b = ImageSpec.from_registry("base", pin_digest=False).apt_install("git")
+        assert a.content_hash(client=None) == b.content_hash(client=None)
+
+    def test_explicit_distro_feeds_hash(self) -> None:
+        """Setting distro explicitly is part of the cache key (it drives rendering)."""
         a = ImageSpec.from_registry("base", pin_digest=False, distro="alpine")
         b = ImageSpec.from_registry("base", pin_digest=False)
-        assert a.content_hash(client=None) == b.content_hash(client=None)
+        assert a.content_hash(client=None) != b.content_hash(client=None)
+
+    def test_distro_affecting_render_changes_hash(self) -> None:
+        """When distro changes the rendered Dockerfile, it must change the hash.
+
+        distro drives .user() rendering (groupadd/useradd vs addgroup/adduser);
+        if two specs render different Dockerfiles they must not collide on the
+        content hash, or the cache serves the wrong image.
+        """
+        debian = ImageSpec.from_registry("base", pin_digest=False, distro="debian").user(
+            uid=1000, gid=1000, name="app"
+        )
+        alpine = ImageSpec.from_registry("base", pin_digest=False, distro="alpine").user(
+            uid=1000, gid=1000, name="app"
+        )
+        assert debian.to_dockerfile() != alpine.to_dockerfile()
+        assert debian.content_hash(client=None) != alpine.content_hash(client=None)
 
     def test_distro_invalid_raises(self) -> None:
         with pytest.raises(ValueError, match="distro must be one of"):

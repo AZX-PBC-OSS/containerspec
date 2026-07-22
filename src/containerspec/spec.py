@@ -385,6 +385,11 @@ class ImageSpec:
             "pin_digest": self.pin_digest,
             "layers": [layer_payload(layer) for layer in self.layers],
         }
+        # distro changes how layers render (e.g. .user() emits useradd vs
+        # adduser), so it must be part of the cache key. Included only when set
+        # explicitly, so specs that leave it inferred keep their existing hash.
+        if self.distro is not None:
+            payload["distro"] = self.distro
         if self.stages:
             payload["stages"] = [
                 {

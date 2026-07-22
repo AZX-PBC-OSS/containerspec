@@ -27,7 +27,7 @@ ENV HF_HUB_ENABLE_HF_TRANSFER=1
 WORKDIR /app
 
 # user(uid=1000, gid=1000, name="warden")
-RUN groupadd -g 1000 warden && useradd -u 1000 -g 1000 -m -d /home/warden warden
+RUN groupadd -g 1000 warden 2>/dev/null || true && useradd -u 1000 -g 1000 -m -d /home/warden warden 2>/dev/null || true
 USER 1000:1000
 
 # chown("/home/warden/.cache/huggingface") — resolved to uid=1000, gid=1000 from preceding .user()

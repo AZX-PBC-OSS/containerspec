@@ -11,7 +11,7 @@ RUN ln -s agetty /etc/init.d/agetty.ttyS0
 ENV TERM=linux
 
 # user(uid=1000, gid=1000, name="warden")
-RUN addgroup -g 1000 warden && adduser -u 1000 -G warden -D -h /home/warden warden
+RUN addgroup -g 1000 warden 2>/dev/null || true && adduser -u 1000 -G warden -D -h /home/warden warden 2>/dev/null || true
 USER 1000:1000
 
 # entrypoint([])

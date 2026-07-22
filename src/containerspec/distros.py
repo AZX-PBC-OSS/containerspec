@@ -22,8 +22,8 @@ class DistroProfile:
 
 DISTRO_PROFILES: dict[str, DistroProfile] = {
     "debian": DistroProfile(
-        group_add="groupadd -g {gid} {name}",
-        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name}",
+        group_add="groupadd -g {gid} {name} 2>/dev/null || true",
+        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name} 2>/dev/null || true",
         package_update=(
             "DEBIAN_FRONTEND=noninteractive apt-get update && "
             "apt-get dist-upgrade -y --no-install-recommends && "
@@ -32,38 +32,38 @@ DISTRO_PROFILES: dict[str, DistroProfile] = {
         noninteractive_prefix="DEBIAN_FRONTEND=noninteractive",
     ),
     "alpine": DistroProfile(
-        group_add="addgroup -g {gid} {name}",
-        user_add="adduser -u {uid} -G {name} -D -h /home/{name} {name}",
+        group_add="addgroup -g {gid} {name} 2>/dev/null || true",
+        user_add="adduser -u {uid} -G {name} -D -h /home/{name} {name} 2>/dev/null || true",
         package_update="apk update && apk upgrade --no-cache",
         noninteractive_prefix="",
     ),
     "rhel": DistroProfile(
-        group_add="groupadd -g {gid} {name}",
-        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name}",
+        group_add="groupadd -g {gid} {name} 2>/dev/null || true",
+        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name} 2>/dev/null || true",
         package_update="dnf upgrade -y && dnf clean all",
         noninteractive_prefix="",
     ),
     "fedora": DistroProfile(
-        group_add="groupadd -g {gid} {name}",
-        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name}",
+        group_add="groupadd -g {gid} {name} 2>/dev/null || true",
+        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name} 2>/dev/null || true",
         package_update="dnf upgrade -y && dnf clean all",
         noninteractive_prefix="",
     ),
     "arch": DistroProfile(
-        group_add="groupadd -g {gid} {name}",
-        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name}",
+        group_add="groupadd -g {gid} {name} 2>/dev/null || true",
+        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name} 2>/dev/null || true",
         package_update="pacman -Syu --noconfirm",
         noninteractive_prefix="",
     ),
     "opensuse": DistroProfile(
-        group_add="groupadd -g {gid} {name}",
-        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name}",
+        group_add="groupadd -g {gid} {name} 2>/dev/null || true",
+        user_add="useradd -u {uid} -g {gid} -m -d /home/{name} {name} 2>/dev/null || true",
         package_update="zypper update -y",
         noninteractive_prefix="",
     ),
     "busybox": DistroProfile(
-        group_add="addgroup -g {gid} {name}",
-        user_add="adduser -u {uid} -G {name} -D -h /home/{name} {name}",
+        group_add="addgroup -g {gid} {name} 2>/dev/null || true",
+        user_add="adduser -u {uid} -G {name} -D -h /home/{name} {name} 2>/dev/null || true",
         package_update="apk update && apk upgrade --no-cache",
         noninteractive_prefix="",
     ),

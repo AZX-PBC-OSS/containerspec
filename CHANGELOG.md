@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.2...v0.1.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* eliminate shell from package install renderers (exec-form RUN) ([b730984](https://github.com/AZX-PBC-OSS/containerspec/commit/b730984025c3dc75ae1284d1c3eb6e4e979abbda))
+
 ## [0.1.2](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.1...v0.1.2) (2026-07-22)
 
 

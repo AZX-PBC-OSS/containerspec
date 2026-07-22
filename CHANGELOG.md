@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.5...v0.1.6) (2026-07-22)
+
+
+### Bug Fixes
+
+* reject shell-unsafe input in render sinks (user/chown/version/copy/env/FROM) ([#12](https://github.com/AZX-PBC-OSS/containerspec/issues/12)) ([9eba8de](https://github.com/AZX-PBC-OSS/containerspec/commit/9eba8de40baa9fd6fc60afe67429b9e0e8fd76e6))
+* use valid buildah push argv for OCI export ([#14](https://github.com/AZX-PBC-OSS/containerspec/issues/14)) ([79be14e](https://github.com/AZX-PBC-OSS/containerspec/commit/79be14eed447e3d9cf1d22119d890d6ecf7fb119))
+
 ## [0.1.5](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.4...v0.1.5) (2026-07-22)
 
 

@@ -209,6 +209,55 @@ class TestDockerfile:
             )
             assert f"COPY {src} /app" in spec.to_dockerfile()
 
+    def test_chown_path_rejects_glob(self) -> None:
+        """chown renders shell-form, so a glob would expand — reject it."""
+        spec = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .user(uid=1000, gid=1000, name="app")
+            .chown("/data/*")
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_chown_path_rejects_tilde(self) -> None:
+        """chown renders shell-form, so a tilde would expand — reject it."""
+        spec = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .user(uid=1000, gid=1000, name="app")
+            .chown("~other/data")
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_workdir_rejects_glob(self) -> None:
+        spec = ImageSpec.from_registry("base", pin_digest=False).workdir("/app/*")
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_copy_glob_still_renders(self) -> None:
+        """COPY globbing stays permitted — only the shell-form sinks reject globs."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).copy(
+            "src/*.py", "/app", content_hash="sha256:abc"
+        )
+        assert "COPY src/*.py /app" in spec.to_dockerfile()
+
+    def test_env_value_rejects_tab(self) -> None:
+        """A tab in an env value can inject a second ENV assignment — reject it."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).env({"A": "x\tPATH=/evil"})
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_env_value_rejects_trailing_backslash(self) -> None:
+        """A trailing backslash is a line-continuation that swallows the next directive."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).env({"A": "x\\"})
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_env_key_allows_leading_underscore(self) -> None:
+        """Common Unix env vars start with an underscore — must not be rejected."""
+        df = ImageSpec.from_registry("base", pin_digest=False).env({"_JAVA_OPTIONS": "-Xmx1g"}).to_dockerfile()
+        assert "ENV _JAVA_OPTIONS=-Xmx1g" in df
+
     def test_version_aliases_render(self) -> None:
         """Real nvm/uv version selectors (lts/<name>, pypy@X) must not be rejected."""
         assert "nvm install lts/hydrogen" in (

@@ -84,7 +84,15 @@ def validate_package(name: str) -> str:
 #              glob ``*`` (``COPY . /app``, ``.env``, ``src/*.py``).
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]*")
+# COPY paths render into non-shell directives, so glob ``*`` (intentional COPY
+# globbing) and a leading ``.`` are allowed.
 _PATH_PATTERN = re.compile(r"[A-Za-z0-9._/~*][A-Za-z0-9._/~*+-]*")
+# chown/workdir paths render into a shell-form RUN (or a directive that does not
+# expand), so glob ``*`` and ``~`` must NOT be allowed — the shell would expand
+# them at build time.
+_FS_PATH_PATTERN = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/-]*")
+# Env var names: allow a leading underscore (``_JAVA_OPTIONS``).
+_ENV_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Image references (FROM): registry/repo:tag@digest — allow ``:`` and ``@``.
 _IMAGE_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*")
 
@@ -111,8 +119,18 @@ def validate_version(value: str, *, field: str) -> str:
 
 
 def validate_path(value: str, *, field: str) -> str:
-    """Validate a filesystem-path field against shell/directive injection."""
+    """Validate a COPY path (globbing allowed) against shell/directive injection."""
     return _validate(value, field=field, pattern=_PATH_PATTERN)
+
+
+def validate_fs_path(value: str, *, field: str) -> str:
+    """Validate a chown/workdir path — no glob/tilde (renders into shell form)."""
+    return _validate(value, field=field, pattern=_FS_PATH_PATTERN)
+
+
+def validate_env_key(value: str, *, field: str) -> str:
+    """Validate an environment variable name (leading underscore allowed)."""
+    return _validate(value, field=field, pattern=_ENV_KEY_PATTERN)
 
 
 def validate_image_ref(value: str, *, field: str) -> str:
@@ -400,11 +418,15 @@ def _render_pip_install(layer: PipInstall, ctx: RenderContext) -> list[str]:
 def _render_env(layer: Env) -> list[str]:
     lines = [f"# env({json.dumps(dict(layer.vars))})"]
     for k, v in layer.vars.items():
-        # Keys are identifier-like; values may hold anything EXCEPT control
-        # characters, which would break the line and inject a directive.
-        validate_name(k, field="env key")
-        if any(c in v for c in "\n\r"):
+        # Keys are env-var names; values may hold anything EXCEPT control
+        # characters (a tab/newline can start a second ENV assignment or a new
+        # directive) or a trailing backslash (a line-continuation that swallows
+        # the next directive).
+        validate_env_key(k, field="env key")
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in v):
             raise ValueError(f"Invalid env value for {k!r}: control characters are not allowed")
+        if v.endswith("\\"):
+            raise ValueError(f"Invalid env value for {k!r}: a trailing backslash is not allowed")
         if " " in v or '"' in v:
             escaped = v.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'ENV {k}="{escaped}"')
@@ -422,14 +444,14 @@ def _render_run_commands(layer: RunCommands) -> list[str]:
 
 
 def _render_workdir(layer: Workdir) -> list[str]:
-    path = validate_path(layer.path, field="workdir path")
+    path = validate_fs_path(layer.path, field="workdir path")
     return [f'# workdir("{path}")', f"WORKDIR {path}"]
 
 
 def _render_chown(spec: ImageSpec, layer: Chown, index: int, ctx: RenderContext) -> list[str]:
     """Render chown with USER root sandwich when non-root user is active."""
     uid, gid = spec.resolve_chown_uid_gid(layer, index=index)
-    path = validate_path(layer.path, field="chown path")
+    path = validate_fs_path(layer.path, field="chown path")
     source = " from preceding .user()" if layer.uid is None and layer.gid is None else ""
     lines: list[str] = [f'# chown("{path}") — resolved to uid={uid}, gid={gid}{source}']
 

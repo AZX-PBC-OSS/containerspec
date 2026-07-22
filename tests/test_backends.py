@@ -300,6 +300,31 @@ class TestBuildahBackend:
 
     @patch("containerspec.backends.asyncio.create_subprocess_exec")
     @pytest.mark.asyncio
+    async def test_oci_output_path_with_colon_raises(self, mock_exec: MagicMock) -> None:
+        """A ':' in the OCI output path would be mis-split by the oci-archive transport.
+
+        buildah's oci-archive:path[:reference] parses at the first colon, so a
+        colon in the path silently truncates it — reject before invoking buildah.
+        """
+        mock_exec.return_value = _ok_proc()
+        with (
+            patch("containerspec.rootfs.shutil.which", return_value="/usr/bin/buildah"),
+            pytest.raises(BuildError, match="colon"),
+        ):
+            await BuildahBackend().solve_and_export(
+                dockerfile="FROM base\n",
+                tag="x:sha-abc",
+                output_type="oci",
+                output_path="/tmp/build:v2/out.tar",
+                labels={},
+                pull=False,
+            )
+        # The bud command may run, but the push must never fire with a bad dest.
+        push_calls = [c for c in mock_exec.call_args_list if "push" in c.args]
+        assert push_calls == []
+
+    @patch("containerspec.backends.asyncio.create_subprocess_exec")
+    @pytest.mark.asyncio
     async def test_builds_passed_dockerfile_not_context_dockerfile(
         self, mock_exec: MagicMock, tmp_path: Path
     ) -> None:

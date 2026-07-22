@@ -159,6 +159,13 @@ class BuildahBackend:
             await _run_command(build_cmd, label="buildah.bud")
 
             if output_type == "oci" and output_path:
+                # The oci-archive: transport parses path[:reference] at the first
+                # colon, so a colon in the path would be silently mis-split.
+                if ":" in output_path:
+                    raise BuildError(
+                        f"OCI output_path must not contain a colon "
+                        f"(the oci-archive transport reserves ':'): {output_path!r}"
+                    )
                 # -f takes a manifest type (oci|v2s2|v2s1); the destination needs
                 # the oci-archive: transport prefix or buildah pushes to a registry.
                 push_cmd = ["buildah", "push", "-f", "oci", tag, f"oci-archive:{output_path}"]

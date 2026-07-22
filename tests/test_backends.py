@@ -304,7 +304,8 @@ class TestBuildahBackend:
         """A ':' in the OCI output path would be mis-split by the oci-archive transport.
 
         buildah's oci-archive:path[:reference] parses at the first colon, so a
-        colon in the path silently truncates it — reject before invoking buildah.
+        colon in the path silently truncates it — reject before invoking buildah,
+        ahead of the build itself so the failure is instant.
         """
         mock_exec.return_value = _ok_proc()
         with (
@@ -319,9 +320,8 @@ class TestBuildahBackend:
                 labels={},
                 pull=False,
             )
-        # The bud command may run, but the push must never fire with a bad dest.
-        push_calls = [c for c in mock_exec.call_args_list if "push" in c.args]
-        assert push_calls == []
+        # Pure input validation — must fail before any buildah command runs.
+        mock_exec.assert_not_called()
 
     @patch("containerspec.backends.asyncio.create_subprocess_exec")
     @pytest.mark.asyncio

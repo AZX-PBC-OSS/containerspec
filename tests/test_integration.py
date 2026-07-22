@@ -359,6 +359,52 @@ class TestRootlessToolInstalls:
 
         subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
 
+    @pytest.mark.asyncio
+    async def test_pnpm_install_builds_and_runs_as_non_root(self) -> None:
+        """pnpm_install() used to fail the build outright: `pnpm add -g` errors
+        with "configured global bin directory ... is not in PATH" unless
+        PNPM_HOME is set and exported to PATH first."""
+        from containerspec import ImageSpec
+
+        spec = (
+            ImageSpec.from_registry("debian:bookworm-slim", pin_digest=False)
+            .apt_install("curl", "ca-certificates")
+            .nvm_install("22")
+            .pnpm_install("cowsay")
+            .user(uid=1000, gid=1000, name="app")
+            .entrypoint([])
+        )
+        built = await spec.build("containerspec-test-pnpm-rootless")
+
+        result = _docker_run(built.tag, "/opt/pnpm/bin/cowsay", "hi", timeout=60)
+        assert result.returncode == 0, result.stderr.decode()
+        assert b"hi" in result.stdout
+
+        subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
+
+    @pytest.mark.asyncio
+    async def test_yarn_install_builds_and_runs(self) -> None:
+        """yarn_install() assumed yarn was already on PATH, but nvm-installed
+        node doesn't bundle yarn (only official node Docker images do via
+        corepack) — `yarn global add` failed with "executable file not
+        found". Must bootstrap yarn via npm first."""
+        from containerspec import ImageSpec
+
+        spec = (
+            ImageSpec.from_registry("debian:bookworm-slim", pin_digest=False)
+            .apt_install("curl", "ca-certificates")
+            .nvm_install("22")
+            .yarn_install("cowsay")
+            .entrypoint([])
+        )
+        built = await spec.build("containerspec-test-yarn")
+
+        result = _docker_run(built.tag, "cowsay", "hi", timeout=60)
+        assert result.returncode == 0, result.stderr.decode()
+        assert b"hi" in result.stdout
+
+        subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
+
 
 class TestAlpineBuild:
     @pytest.mark.asyncio

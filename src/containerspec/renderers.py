@@ -84,6 +84,19 @@ def _exec_run(mounts: list[str], args: list[str]) -> str:
     return " ".join(["RUN", *mounts, json.dumps(args)])
 
 
+def _cache_mount(target: str, ctx: RenderContext, *, sharing: str = "locked") -> str:
+    """Render a ``--mount=type=cache`` flag owned by the current build user.
+
+    BuildKit cache mounts default to uid=0/gid=0 regardless of the target
+    path, even when a non-root ``USER`` is active — the tool then hits
+    EACCES writing into what looks like its own home directory. Passing
+    ``uid``/``gid`` makes the mount's backing volume owned by the active
+    user so it's actually writable.
+    """
+    owner = "" if ctx.is_root else f",uid={ctx.uid},gid={ctx.gid}"
+    return f"--mount=type=cache,target={target},sharing={sharing}{owner}"
+
+
 @dataclass
 class RenderContext:
     """Tracks accumulated Dockerfile state from preceding layers."""
@@ -317,7 +330,7 @@ def _render_uv_pip_install(layer: UvPipInstall, ctx: RenderContext) -> list[str]
         f"# uv_pip_install({pkgs_repr})",
         "ENV UV_LINK_MODE=copy",
         _exec_run(
-            [f"--mount=type=cache,target={cache},sharing=locked"],
+            [_cache_mount(cache, ctx)],
             ["uv", "pip", "install", *validated],
         ),
     ]
@@ -330,7 +343,7 @@ def _render_pip_install(layer: PipInstall, ctx: RenderContext) -> list[str]:
     return [
         f"# pip_install({pkgs_repr})",
         _exec_run(
-            [f"--mount=type=cache,target={cache},sharing=locked"],
+            [_cache_mount(cache, ctx)],
             ["pip", "install", "--no-cache-dir", *validated],
         ),
     ]
@@ -481,7 +494,7 @@ def _render_npm_install(layer: NpmInstall, ctx: RenderContext) -> list[str]:
     return [
         f"# npm_install({pkgs_repr})",
         _exec_run(
-            [f"--mount=type=cache,target={cache},sharing=locked"],
+            [_cache_mount(cache, ctx)],
             ["npm", "install", "-g", *validated],
         ),
     ]
@@ -503,7 +516,7 @@ def _render_pnpm_install(layer: PnpmInstall, ctx: RenderContext) -> list[str]:
         f"ENV PNPM_HOME={pnpm_home}",
         f"ENV PATH={pnpm_home}/bin:$PATH",
         _exec_run(
-            [f"--mount=type=cache,target={store},sharing=locked"],
+            [_cache_mount(store, ctx)],
             ["pnpm", "add", "-g", *validated],
         ),
     ]
@@ -558,10 +571,7 @@ def _render_cargo_install(layer: CargoInstall, ctx: RenderContext) -> list[str]:
     return [
         f"# cargo_install({pkgs_repr})",
         _exec_run(
-            [
-                f"--mount=type=cache,target={registry},sharing=locked",
-                f"--mount=type=cache,target={git},sharing=locked",
-            ],
+            [_cache_mount(registry, ctx), _cache_mount(git, ctx)],
             ["cargo", "install", *validated],
         ),
     ]
@@ -574,7 +584,7 @@ def _render_uvx_install(layer: UvxInstall, ctx: RenderContext) -> list[str]:
     return [
         f"# uvx_install({pkgs_repr})",
         _exec_run(
-            [f"--mount=type=cache,target={cache},sharing=locked"],
+            [_cache_mount(cache, ctx)],
             ["uvx", "--system", *validated],
         ),
     ]
@@ -611,7 +621,7 @@ def _render_yarn_install(layer: YarnInstall, ctx: RenderContext) -> list[str]:
         f"# yarn_install({pkgs_repr})",
         _exec_run([], ["npm", "install", "-g", "yarn"]),
         _exec_run(
-            [f"--mount=type=cache,target={cache},sharing=locked"],
+            [_cache_mount(cache, ctx)],
             ["yarn", "global", "add", *validated],
         ),
     ]
@@ -633,7 +643,7 @@ def _render_go_install(layer: GoInstall, ctx: RenderContext) -> list[str]:
     return [
         f"# go_install({pkgs_repr})",
         _exec_run(
-            [f"--mount=type=cache,target={cache},sharing=locked"],
+            [_cache_mount(cache, ctx)],
             ["go", "install", *validated],
         ),
     ]

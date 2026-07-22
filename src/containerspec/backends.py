@@ -159,7 +159,9 @@ class BuildahBackend:
             await _run_command(build_cmd, label="buildah.bud")
 
             if output_type == "oci" and output_path:
-                push_cmd = ["buildah", "push", "-f", "oci-archive", tag, output_path]
+                # -f takes a manifest type (oci|v2s2|v2s1); the destination needs
+                # the oci-archive: transport prefix or buildah pushes to a registry.
+                push_cmd = ["buildah", "push", "-f", "oci", tag, f"oci-archive:{output_path}"]
                 await _run_command(push_cmd, label="buildah.push.oci")
             elif output_type == "local" and output_path:
                 await self._export_filesystem(tag=tag, dest=output_path)

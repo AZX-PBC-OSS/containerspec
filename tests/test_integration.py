@@ -307,15 +307,6 @@ class TestCacheConsistency:
 
 
 class TestMultiStageBuild:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "pre-existing bug: copy() of a local file is not staged into the buildx "
-            "build context (BuildKitBackend uses cwd '.' as context, backends.py:113), "
-            "so COPY of an absolute host path fails with 'not found'. Multi-stage "
-            "Dockerfile rendering is fixed; this needs build-context staging."
-        ),
-    )
     @pytest.mark.asyncio
     async def test_multistage_node_nginx(self, tmp_path: Path) -> None:
         """Build a multi-stage image: node builder compiles, nginx serves."""
@@ -340,7 +331,10 @@ class TestMultiStageBuild:
         built = await runtime.build("containerspec-test-multistage")
         assert built.tag.startswith("containerspec-test-multistage:sha-")
 
-        result = _docker_run(built.tag, "cat", "/usr/share/nginx/html/index.html", timeout=30)
+        result = subprocess.run(  # noqa: S603, S607
+            ["docker", "run", "--rm", "--entrypoint", "", built.tag, "cat", "/usr/share/nginx/html/index.html"],
+            capture_output=True, timeout=30, check=False,
+        )
         assert result.returncode == 0, result.stderr.decode()
         assert b"Hello from containerspec" in result.stdout
 

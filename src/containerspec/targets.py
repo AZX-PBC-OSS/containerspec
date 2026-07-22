@@ -54,6 +54,7 @@ class BuildTarget(Protocol):
         client: Any | None,
         backend: Any,
         pull: bool,
+        context_path: str = ".",
     ) -> Any: ...
 
     def result_from_cache(self, *, hash: str, client: Any | None) -> Any: ...
@@ -104,6 +105,7 @@ class DockerTarget:
         client: Any | None,
         backend: Any,
         pull: bool,
+        context_path: str = ".",
     ) -> BuiltImage:
         await backend.solve_and_export(
             dockerfile=dockerfile,
@@ -112,6 +114,7 @@ class DockerTarget:
             output_path=None,
             labels={"containerspec.image_spec": canonical_json},
             pull=pull,
+            context_path=context_path,
         )
         return BuiltImage(tag=tag)
 
@@ -155,6 +158,7 @@ class FirecrackerRootfsTarget:
         client: Any | None,
         backend: Any,
         pull: bool,
+        context_path: str = ".",
     ) -> FirecrackerRootfs:
         import tempfile
 
@@ -238,6 +242,7 @@ class OciTarget:
         client: Any | None,
         backend: Any,
         pull: bool,
+        context_path: str = ".",
     ) -> OciArtifact:
         hash_16 = tag.split("sha-")[-1]
         await backend.solve_and_export(
@@ -247,6 +252,7 @@ class OciTarget:
             output_path=self.path,
             labels={"containerspec.image_spec": canonical_json},
             pull=pull,
+            context_path=context_path,
         )
         from containerspec.rootfs import write_sidecar
 

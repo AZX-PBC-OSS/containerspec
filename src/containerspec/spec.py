@@ -446,6 +446,52 @@ class ImageSpec:
             lines.extend(render_dockerfile(self, layer, i))
         return "\n".join(lines) + "\n"
 
+    def _prepare_build_context(self, dockerfile: str) -> str:
+        """Create a build context directory from Copy layers across all stages.
+
+        Collects Copy layers from the main spec AND all stage specs, copies their
+        local sources into a temp context directory, and rewrites COPY paths in
+        the Dockerfile to use context-relative paths.
+        """
+        import shutil
+        import tempfile
+
+        all_copy_layers: list[Copy] = [
+            layer for layer in self.layers if isinstance(layer, Copy) and layer.content_hash
+        ]
+        for stage in self.stages:
+            all_copy_layers.extend(
+                layer
+                for layer in stage.spec.layers
+                if isinstance(layer, Copy) and layer.content_hash
+            )
+
+        if not all_copy_layers:
+            return "."
+
+        context_dir = tempfile.mkdtemp(prefix="containerspec-context-")
+        rewritten_dockerfile = dockerfile
+
+        for layer in all_copy_layers:
+            src_path = Path(layer.src)
+            if not src_path.exists():
+                continue
+            dest_name = f"ctx_{hash(layer.src) & 0xFFFFFFFF:08x}_{src_path.name}"
+            ctx_dest = Path(context_dir) / dest_name
+            if src_path.is_dir():
+                shutil.copytree(src_path, ctx_dest)
+            else:
+                shutil.copy2(src_path, ctx_dest)
+            rewritten_dockerfile = rewritten_dockerfile.replace(
+                f"COPY {layer.src} {layer.dest}",
+                f"COPY {dest_name} {layer.dest}",
+            )
+
+        df_path = Path(context_dir) / "Dockerfile"
+        df_path.write_text(rewritten_dockerfile)
+
+        return context_dir
+
     def resolve_chown_uid_gid(self, chown: Chown, *, index: int) -> tuple[int, int]:
         if chown.uid is not None and chown.gid is not None:
             return chown.uid, chown.gid
@@ -500,6 +546,8 @@ class ImageSpec:
         dockerfile = self._to_build_dockerfile(client=client)
         pull = not self.pin_digest
 
+        context_path = self._prepare_build_context(dockerfile)
+
         try:
             result = await target.export(
                 dockerfile=dockerfile,
@@ -508,6 +556,7 @@ class ImageSpec:
                 client=client,
                 backend=backend,
                 pull=pull,
+                context_path=context_path,
             )
         except (MissingToolError, BuildError):
             raise

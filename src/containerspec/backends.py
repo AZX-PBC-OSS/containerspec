@@ -42,6 +42,7 @@ class BuildBackend(Protocol):
         output_path: str | None,
         labels: dict[str, str],
         pull: bool,
+        context_path: str = ".",
     ) -> None: ...
 
 
@@ -95,8 +96,15 @@ class BuildKitBackend:
         output_path: str | None,
         labels: dict[str, str],
         pull: bool,
+        context_path: str = ".",
     ) -> None:
-        dockerfile_path = _write_dockerfile_temp(dockerfile)
+        context_dockerfile = Path(context_path) / "Dockerfile"
+        if context_dockerfile.exists():
+            dockerfile_path = str(context_dockerfile)
+            cleanup_dockerfile = False
+        else:
+            dockerfile_path = _write_dockerfile_temp(dockerfile)
+            cleanup_dockerfile = True
         try:
             cmd: list[str] = ["docker", "buildx", "build"]
             if self.builder:
@@ -110,10 +118,11 @@ class BuildKitBackend:
                 cmd.append("--pull")
             for k, v in labels.items():
                 cmd.extend(["--label", f"{k}={v}"])
-            cmd.append(".")
+            cmd.append(context_path)
             await _run_command(cmd, label="buildx")
         finally:
-            Path(dockerfile_path).unlink(missing_ok=True)
+            if cleanup_dockerfile:
+                Path(dockerfile_path).unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -134,6 +143,7 @@ class BuildahBackend:
         output_path: str | None,
         labels: dict[str, str],
         pull: bool,
+        context_path: str = ".",
     ) -> None:
         from containerspec.rootfs import check_buildah
 
@@ -152,7 +162,7 @@ class BuildahBackend:
                 build_cmd.append("--pull")
             for k, v in labels.items():
                 build_cmd.extend(["--label", f"{k}={v}"])
-            build_cmd.append(".")
+            build_cmd.append(context_path)
             await _run_command(build_cmd, label="buildah.bud")
 
             if output_type == "oci" and output_path:
@@ -199,6 +209,7 @@ class DockerBackend:
         output_path: str | None,
         labels: dict[str, str],
         pull: bool,
+        context_path: str = ".",
     ) -> None:
         if output_type != "docker":
             raise BuildError(
@@ -212,14 +223,23 @@ class DockerBackend:
 
             self.client = docker.from_env()
         logger.info("containerspec.docker.build", extra={"tag": tag})
-        await asyncio.to_thread(
-            self.client.images.build,
-            fileobj=io.BytesIO(dockerfile.encode()),
-            tag=tag,
-            pull=pull,
-            rm=True,
-            labels=labels,
-        )
+        build_kwargs: dict[str, Any] = {
+            "tag": tag,
+            "pull": pull,
+            "rm": True,
+            "labels": labels,
+        }
+        if context_path and context_path != ".":
+            dockerfile_path = _write_dockerfile_temp(dockerfile)
+            try:
+                build_kwargs["dockerfile"] = dockerfile_path
+                build_kwargs["path"] = context_path
+                await asyncio.to_thread(self.client.images.build, **build_kwargs)
+            finally:
+                Path(dockerfile_path).unlink(missing_ok=True)
+        else:
+            build_kwargs["fileobj"] = io.BytesIO(dockerfile.encode())
+            await asyncio.to_thread(self.client.images.build, **build_kwargs)
         logger.info("containerspec.docker.complete", extra={"tag": tag})
 
 

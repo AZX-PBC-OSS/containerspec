@@ -17,7 +17,7 @@ import re
 # and a leading @ (npm scoped packages) are allowed because install renderers
 # emit exec-form RUN, which bypasses the shell entirely — arguments are passed
 # as literal JSON-array strings with no shell interpretation.
-_PKG_PATTERN = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._+:=@~/\[\]<>!~,^#-]*$")
+_PKG_PATTERN = re.compile(r"@?[A-Za-z0-9][A-Za-z0-9._+:=@~/\[\]<>!~,^#-]*")
 
 # The remaining fields render into shell-form RUN lines and COPY/WORKDIR/FROM/ENV
 # directives, so they must never carry shell metacharacters, whitespace, or
@@ -45,7 +45,7 @@ def validate_package(name: str) -> str:
     """Validate a package name against a safe pattern to prevent shell injection."""
     if not name:
         raise ValueError("Package name cannot be empty")
-    if not _PKG_PATTERN.match(name):
+    if not _PKG_PATTERN.fullmatch(name):
         raise ValueError(
             f"Invalid package name: {name!r}. Package names must match {_PKG_PATTERN.pattern}"
         )
@@ -91,3 +91,15 @@ def validate_env_key(value: str, *, field: str) -> str:
 def validate_image_ref(value: str, *, field: str) -> str:
     """Validate a FROM image reference against directive injection."""
     return _validate(value, field=field, pattern=_IMAGE_REF_PATTERN)
+
+
+def validate_int(value: object, *, field: str) -> int:
+    """Require an actual ``int`` (bool excluded) for uid/gid/port fields.
+
+    These render into shell-form ``RUN`` lines and ``USER``/``EXPOSE``
+    directives protected only by type annotations — a string smuggled in by an
+    unchecked caller (e.g. JSON input) would be interpolated verbatim.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an int, got {type(value).__name__}: {value!r}")
+    return value

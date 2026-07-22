@@ -298,6 +298,155 @@ class TestDockerfile:
         assert "chown -R 1000:1000 /home/warden/.cache" in df
         assert "WORKDIR /app" in df
 
+    def test_base_image_ref_rejects_newline_injection(self) -> None:
+        """A FROM image ref with a newline must not inject a directive."""
+        spec = ImageSpec.from_registry("base\nUSER root", pin_digest=False)
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_stage_name_rejects_newline_injection(self) -> None:
+        """A stage name reaches FROM ... AS and COPY --from — must be guarded."""
+        builder = ImageSpec.from_registry("node:22", pin_digest=False).with_stage(
+            "builder\nUSER root"
+        )
+        spec = ImageSpec.from_registry("base", pin_digest=False).copy_from_stage(
+            builder, "/dist", "/out"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_stage_base_image_rejects_newline_injection(self) -> None:
+        """The stage's own FROM ref must be guarded like the main one."""
+        builder = ImageSpec.from_registry("node:22\nUSER root", pin_digest=False).with_stage(
+            "builder"
+        )
+        spec = ImageSpec.from_registry("base", pin_digest=False).copy_from_stage(
+            builder, "/dist", "/out"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_env_key_rejects_injection(self) -> None:
+        """An env key with whitespace/newline must not reach the ENV directive."""
+        for key in ("A B", "A\nUSER root", "A=x"):
+            spec = ImageSpec.from_registry("base", pin_digest=False).env({key: "x"})
+            with pytest.raises(ValueError):
+                spec.to_dockerfile()
+
+    def test_copy_src_rejects_newline_injection(self) -> None:
+        """copy src is a directive sink like dest — must be guarded."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).copy(
+            "app.py\nUSER root", "/app", content_hash="sha256:abc"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_copy_from_stage_src_rejects_newline_injection(self) -> None:
+        """copy_from_stage src must be guarded like dest (same directive sink)."""
+        builder = ImageSpec.from_registry("node:22", pin_digest=False).with_stage("builder")
+        spec = ImageSpec.from_registry("base", pin_digest=False).copy_from_stage(
+            builder, "/dist\nUSER root", "/out"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_validated_fields_reject_empty_string(self) -> None:
+        """Every validator rejects the empty string, not just bad characters."""
+        with pytest.raises(ValueError):
+            ImageSpec.from_registry("", pin_digest=False)
+        base = ImageSpec.from_registry("base", pin_digest=False)
+        for spec in (
+            base.workdir(""),
+            base.user(uid=1000, gid=1000, name=""),
+            base.copy("", "/app", content_hash="sha256:abc"),
+            base.env({"": "x"}),
+            base.add_python(""),
+        ):
+            with pytest.raises(ValueError):
+                spec.to_dockerfile()
+
+    def test_chown_uid_gid_reject_non_int(self) -> None:
+        """A string uid/gid would be interpolated into a shell-form RUN — reject."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).chown(
+            "/data",
+            uid="0; touch /pwned",  # type: ignore[arg-type]
+            gid=0,
+        )
+        with pytest.raises(ValueError, match="must be an int"):
+            spec.to_dockerfile()
+
+    def test_user_uid_gid_reject_non_int(self) -> None:
+        """A string uid flows into RUN useradd, USER, and cache mounts — reject."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).user(
+            uid="1000 && touch /pwned #",  # type: ignore[arg-type]
+            gid=1000,
+            name="app",
+        )
+        with pytest.raises(ValueError, match="must be an int"):
+            spec.to_dockerfile()
+
+    def test_expose_rejects_non_int_port(self) -> None:
+        """A string port would inject a directive after EXPOSE — reject."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).expose(
+            "8080\nUSER root"  # type: ignore[arg-type]
+        )
+        with pytest.raises(ValueError, match="must be an int"):
+            spec.to_dockerfile()
+
+    def test_expose_rejects_bool_port(self) -> None:
+        """bool is an int subclass; EXPOSE True is nonsense — reject."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).expose(True)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="must be an int"):
+            spec.to_dockerfile()
+
+    def test_entrypoint_comment_escapes_newline(self) -> None:
+        """A newline in an exec-form command must not escape the echo comment."""
+        df = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .entrypoint(["sh", "-c", "x\nRUN touch /pwned #"])
+            .to_dockerfile()
+        )
+        assert "\nRUN" not in df
+
+    def test_cmd_comment_escapes_newline(self) -> None:
+        df = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .cmd(["x\nUSER root #"])
+            .to_dockerfile()
+        )
+        assert "\nUSER" not in df
+
+    def test_volume_comment_escapes_newline(self) -> None:
+        df = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .volume("/data\nRUN touch /pwned #")
+            .to_dockerfile()
+        )
+        assert "\nRUN" not in df
+
+    def test_aur_install_renders_exec_form(self) -> None:
+        """aur_install joins packages into one exec-form yay call, sorted."""
+        df = (
+            ImageSpec.from_registry("archlinux", pin_digest=False)
+            .aur_install("foo", "bar")
+            .to_dockerfile()
+        )
+        assert '["yay", "-S", "--noconfirm", "bar", "foo"]' in df
+
+    def test_aur_install_rejects_shell_metacharacters(self) -> None:
+        """AUR packages hit validate_package like every other *_install."""
+        spec = ImageSpec.from_registry("archlinux", pin_digest=False).aur_install(
+            "foo; touch /pwned"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_package_trailing_newline_rejected(self) -> None:
+        """validate_package uses fullmatch — 'pkg\\n' must not slip through."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).apt_install("git\n")
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
     def test_brew_install(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).brew_install("jq")
         df = spec.to_dockerfile()

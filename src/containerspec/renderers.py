@@ -16,6 +16,7 @@ from containerspec.layers import (
     AddPython,
     ApkInstall,
     AptInstall,
+    AurInstall,
     BrewInstall,
     CargoInstall,
     Chown,
@@ -47,6 +48,7 @@ from containerspec.layers import (
 from containerspec.validation import (
     validate_env_key,
     validate_fs_path,
+    validate_int,
     validate_name,
     validate_package,
     validate_path,
@@ -160,7 +162,7 @@ class RenderContext:
             self.package_manager = "apk"
         elif isinstance(layer, DnfInstall):
             self.package_manager = "dnf"
-        elif isinstance(layer, PacmanInstall):
+        elif isinstance(layer, PacmanInstall | AurInstall):
             self.package_manager = "pacman"
         elif isinstance(layer, ZypperInstall):
             self.package_manager = "zypper"
@@ -201,6 +203,8 @@ def render_layer(spec: ImageSpec, layer: Layer, index: int, ctx: RenderContext) 
         return _render_dnf_install(layer)
     if isinstance(layer, PacmanInstall):
         return _render_pacman_install(layer)
+    if isinstance(layer, AurInstall):
+        return _render_aur_install(layer)
     if isinstance(layer, ZypperInstall):
         return _render_zypper_install(layer)
     if isinstance(layer, UvPipInstall):
@@ -397,36 +401,41 @@ def _render_user(layer: User, ctx: RenderContext) -> list[str]:
     )
     profile = get_profile(effective_distro if effective_distro else "debian")
     name = validate_name(layer.name, field="user name")
-    group_cmd = profile.group_add.format(gid=layer.gid, name=name)
-    user_cmd = profile.user_add.format(uid=layer.uid, gid=layer.gid, name=name)
+    uid = validate_int(layer.uid, field="user uid")
+    gid = validate_int(layer.gid, field="user gid")
+    group_cmd = profile.group_add.format(gid=gid, name=name)
+    user_cmd = profile.user_add.format(uid=uid, gid=gid, name=name)
     return [
-        f'# user(uid={layer.uid}, gid={layer.gid}, name="{name}")',
+        f'# user(uid={uid}, gid={gid}, name="{name}")',
         f"RUN {group_cmd} && {user_cmd}",
-        f"USER {layer.uid}:{layer.gid}",
+        f"USER {uid}:{gid}",
     ]
 
 
 def _render_entrypoint(layer: Entrypoint) -> list[str]:
     if layer.commands is None:
         return ["# entrypoint(None)"]
-    cmds_repr = ", ".join(f'"{c}"' for c in layer.commands)
+    # json.dumps each element so a newline in a command can't break out of the
+    # comment into a live directive (the ENTRYPOINT line itself is exec-form).
+    cmds_repr = ", ".join(json.dumps(c) for c in layer.commands)
     return [f"# entrypoint([{cmds_repr}])", f"ENTRYPOINT {json.dumps(list(layer.commands))}"]
 
 
 def _render_expose(layer: Expose) -> list[str]:
-    ports_repr = ", ".join(str(p) for p in layer.ports)
-    return [f"# expose({ports_repr})", f"EXPOSE {' '.join(str(p) for p in layer.ports)}"]
+    ports = [validate_int(p, field="expose port") for p in layer.ports]
+    ports_repr = ", ".join(str(p) for p in ports)
+    return [f"# expose({ports_repr})", f"EXPOSE {' '.join(str(p) for p in ports)}"]
 
 
 def _render_cmd(layer: Cmd) -> list[str]:
     if layer.commands is None:
         return ["# cmd(None)"]
-    cmds_repr = ", ".join(f'"{c}"' for c in layer.commands)
+    cmds_repr = ", ".join(json.dumps(c) for c in layer.commands)
     return [f"# cmd([{cmds_repr}])", f"CMD {json.dumps(list(layer.commands))}"]
 
 
 def _render_volume(layer: Volume) -> list[str]:
-    paths_repr = ", ".join(f'"{p}"' for p in layer.paths)
+    paths_repr = ", ".join(json.dumps(p) for p in layer.paths)
     return [f"# volume({paths_repr})", f"VOLUME {json.dumps(list(layer.paths))}"]
 
 
@@ -603,6 +612,15 @@ def _render_pacman_install(layer: PacmanInstall) -> list[str]:
         f"# pacman_install({pkgs_repr})",
         _exec_run([], ["pacman", "-S", "--noconfirm", "--needed", *validated]),
         _exec_run([], ["pacman", "-Scc", "--noconfirm"]),
+    ]
+
+
+def _render_aur_install(layer: AurInstall) -> list[str]:
+    pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
+    return [
+        f"# aur_install({pkgs_repr})",
+        _exec_run([], ["yay", "-S", "--noconfirm", *validated]),
     ]
 
 

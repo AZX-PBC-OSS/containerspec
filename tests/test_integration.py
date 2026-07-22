@@ -258,6 +258,108 @@ class TestRootlessBuild:
         subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
 
 
+class TestRootlessToolInstalls:
+    """Regression coverage for issue: tool installers (uv/nvm/rust) placed
+    interpreters/binaries under $HOME, which resolves to /root while the
+    build is still running as root. /root is mode 0700, so once a later
+    .user() drops to non-root, every symlink into it 126s with "permission
+    denied" — invisible in golden-file tests since `docker run tag cmd`
+    masks the failure by silently falling through PATH to a different
+    binary. These tests build real images and invoke the tool by its full
+    resolved path as the non-root user to catch that class of bug.
+    """
+
+    @pytest.mark.asyncio
+    async def test_uv_managed_python_runs_as_non_root(self) -> None:
+        from containerspec import ImageSpec
+
+        spec = (
+            ImageSpec.from_registry("python:3.12-slim", pin_digest=False)
+            .add_python("3.12")
+            .user(uid=1000, gid=1000, name="app")
+            .entrypoint([])
+        )
+        built = await spec.build("containerspec-test-uv-rootless")
+
+        result = _docker_run(built.tag, "whoami", timeout=30)
+        assert result.returncode == 0, result.stderr.decode()
+        assert b"app" in result.stdout
+
+        result2 = _docker_run(
+            built.tag, "/opt/venv/bin/python", "-c", "print('venv-ok')", timeout=30
+        )
+        assert result2.returncode == 0, result2.stderr.decode()
+        assert b"venv-ok" in result2.stdout
+
+        subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
+
+    @pytest.mark.asyncio
+    async def test_nvm_node_runs_as_non_root_when_installed_before_user(self) -> None:
+        from containerspec import ImageSpec
+
+        spec = (
+            ImageSpec.from_registry("debian:bookworm-slim", pin_digest=False)
+            .apt_install("curl", "ca-certificates")
+            .nvm_install("22")
+            .user(uid=1000, gid=1000, name="app")
+            .entrypoint([])
+        )
+        built = await spec.build("containerspec-test-nvm-rootless-before")
+
+        result = _docker_run(built.tag, "/usr/local/bin/node", "--version", timeout=120)
+        assert result.returncode == 0, result.stderr.decode()
+        assert b"v22" in result.stdout
+
+        subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
+
+    @pytest.mark.asyncio
+    async def test_nvm_node_runs_as_non_root_when_installed_after_user(self) -> None:
+        """nvm_install() called after .user(): global /usr/local/bin symlinks are
+        unreachable (root-owned), so node must land somewhere the user owns and
+        can add to their own PATH — and npm's global prefix must follow suit so
+        a later npm_install() doesn't try to write into /usr/local either."""
+        from containerspec import ImageSpec
+
+        spec = (
+            ImageSpec.from_registry("debian:bookworm-slim", pin_digest=False)
+            .apt_install("curl", "ca-certificates")
+            .user(uid=1000, gid=1000, name="app")
+            .nvm_install("22")
+            .npm_install("typescript")
+            .entrypoint([])
+        )
+        built = await spec.build("containerspec-test-nvm-rootless-after")
+
+        result = _docker_run(built.tag, "node", "--version", timeout=120)
+        assert result.returncode == 0, result.stderr.decode()
+        assert b"v22" in result.stdout
+
+        result_ts = _docker_run(built.tag, "tsc", "--version", timeout=60)
+        assert result_ts.returncode == 0, result_ts.stderr.decode()
+
+        subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
+
+    @pytest.mark.asyncio
+    async def test_rust_cargo_runs_as_non_root_when_installed_before_user(self) -> None:
+        from containerspec import ImageSpec
+
+        spec = (
+            ImageSpec.from_registry("debian:bookworm-slim", pin_digest=False)
+            .apt_install("curl", "ca-certificates", "build-essential")
+            .rust_install()
+            .cargo_install("ripgrep")
+            .user(uid=1000, gid=1000, name="app")
+            .entrypoint([])
+        )
+        built = await spec.build("containerspec-test-rust-rootless")
+
+        result = _docker_run(built.tag, "/opt/cargo/bin/rg", "--version", timeout=180)
+        assert result.returncode == 0, result.stderr.decode()
+        assert b"ripgrep" in result.stdout
+
+        subprocess.run(["docker", "rmi", built.tag], check=False, timeout=30)  # noqa: S603, S607
+
+
 class TestAlpineBuild:
     @pytest.mark.asyncio
     async def test_alpine_apk_build_and_run(self) -> None:

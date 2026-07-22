@@ -54,6 +54,7 @@ class TestDockerfile:
         spec = ImageSpec.from_registry("base", pin_digest=False).add_python("3.12")
         df = spec.to_dockerfile()
         assert "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/" in df
+        assert "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python" in df
         assert "uv python install 3.12" in df
         assert "uv venv --python 3.12 /opt/venv" in df
         assert "ENV PATH=/opt/venv/bin:$PATH" in df

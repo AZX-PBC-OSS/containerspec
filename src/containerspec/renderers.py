@@ -92,6 +92,7 @@ class RenderContext:
     current_workdir: str = "/"
     python_venv: str | None = None
     rust_installed: bool = False
+    cargo_home: str | None = None
     nvm_installed: bool = False
     brew_installed: bool = False
     package_manager: str | None = None
@@ -129,10 +130,10 @@ class RenderContext:
         return f"{self.home}/.npm"
 
     def cargo_registry(self) -> str:
-        return f"{self.home}/.cargo/registry"
+        return f"{self.cargo_home or '/opt/cargo'}/registry"
 
     def cargo_git(self) -> str:
-        return f"{self.home}/.cargo/git"
+        return f"{self.cargo_home or '/opt/cargo'}/git"
 
     def pnpm_store(self) -> str:
         return f"{self.home}/.local/share/pnpm/store"
@@ -147,6 +148,7 @@ class RenderContext:
             self.python_venv = "/opt/venv"
         elif isinstance(layer, RustInstall):
             self.rust_installed = True
+            self.cargo_home = "/opt/cargo" if self.is_root else f"{self.home}/.cargo"
         elif isinstance(layer, NvmInstall):
             self.nvm_installed = True
         elif isinstance(layer, BrewInstall):
@@ -253,7 +255,9 @@ def _render_add_python(layer: AddPython) -> list[str]:
     return [
         f'# add_python("{layer.version}")',
         "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/",
-        f"RUN uv python install {layer.version} && uv venv --python {layer.version} /opt/venv",
+        "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
+        f"RUN uv python install {layer.version} "
+        f"&& uv venv --python {layer.version} /opt/venv",
         "ENV PATH=/opt/venv/bin:$PATH",
         "ENV VIRTUAL_ENV=/opt/venv",
     ]
@@ -428,20 +432,45 @@ def _render_copy_from_stage(layer: CopyFromStage) -> list[str]:
 
 def _render_nvm_install(layer: NvmInstall, ctx: RenderContext) -> list[str]:
     version = layer.version
-    nvm_dir = f"{ctx.home}/.nvm"
+    # If we're still root at this point, a later .user() may switch to a
+    # non-root account that needs to run the installed node/npm/npx. /root
+    # is mode 0700 (unreadable by others), so installing under ctx.home
+    # there would leave the bin-dir symlinks below permission-denied for
+    # that user. /opt is traversable by everyone. If a non-root user is
+    # already active (ctx.is_root is False — .user() ran before this layer),
+    # ctx.home is that user's own, correctly-owned home — keep using it.
+    #
+    # The symlink target has the same root/non-root split: /usr/local/bin
+    # is root-owned, so a non-root user can't `ln` into it — symlink into
+    # their own ~/.local/bin instead and put that on PATH.
+    # npm's global install prefix must be writable by whoever runs later
+    # npm_install() layers — /usr/local only works for root; a non-root user
+    # gets a permission-denied on `npm install -g` if the prefix is left
+    # pointing there.
+    if ctx.is_root:
+        nvm_dir = "/opt/nvm"
+        bin_dir = "/usr/local/bin"
+        npm_prefix = "/usr/local"
+    else:
+        nvm_dir = f"{ctx.home}/.nvm"
+        bin_dir = f"{ctx.home}/.local/bin"
+        npm_prefix = f"{ctx.home}/.local"
+    path_env = [] if ctx.is_root else [f"ENV PATH={bin_dir}:$PATH"]
     return [
         f'# nvm_install("{version}")',
         'SHELL ["/bin/bash", "-o", "pipefail", "-c"]',
-        f"RUN curl -o- {NVM_INSTALL_SCRIPT} | bash \\\n"
-        f'    && export NVM_DIR="{nvm_dir}" && . "$NVM_DIR/nvm.sh" \\\n'
+        f'RUN mkdir -p "{nvm_dir}" "{bin_dir}" && export NVM_DIR="{nvm_dir}" \\\n'
+        f"    && curl -o- {NVM_INSTALL_SCRIPT} | bash \\\n"
+        f'    && . "$NVM_DIR/nvm.sh" \\\n'
         f"    && nvm install {version} \\\n"
         f"    && nvm alias default {version} \\\n"
-        f"    && npm config set prefix /usr/local \\\n"
+        f"    && npm config set prefix {npm_prefix} \\\n"
         f"    && NODE_DIR=$(dirname $(which node)) \\\n"
-        f"    && ln -sf $NODE_DIR/node /usr/local/bin/node \\\n"
-        f"    && ln -sf $NODE_DIR/npm /usr/local/bin/npm \\\n"
-        f"    && ln -sf $NODE_DIR/npx /usr/local/bin/npx",
+        f"    && ln -sf $NODE_DIR/node {bin_dir}/node \\\n"
+        f"    && ln -sf $NODE_DIR/npm {bin_dir}/npm \\\n"
+        f"    && ln -sf $NODE_DIR/npx {bin_dir}/npx",
         f"ENV NVM_DIR={nvm_dir}",
+        *path_env,
     ]
 
 
@@ -462,10 +491,17 @@ def _render_pnpm_install(layer: PnpmInstall, ctx: RenderContext) -> list[str]:
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
     validated = [validate_package(p) for p in layer.packages]
     store = ctx.pnpm_store()
+    # pnpm refuses `add -g` unless PNPM_HOME is set and its bin dir is on
+    # PATH ("configured global bin directory ... is not in PATH") — this is
+    # a hard build failure, not just a permissions issue. Fixed /opt path
+    # (not ctx.home) so a later non-root .user() can still traverse into it.
+    pnpm_home = "/opt/pnpm"
     # Split: install pnpm itself, then add packages with the pnpm store cache.
     return [
         f"# pnpm_install({pkgs_repr})",
         _exec_run([], ["npm", "install", "-g", "pnpm"]),
+        f"ENV PNPM_HOME={pnpm_home}",
+        f"ENV PATH={pnpm_home}/bin:$PATH",
         _exec_run(
             [f"--mount=type=cache,target={store},sharing=locked"],
             ["pnpm", "add", "-g", *validated],
@@ -493,12 +529,24 @@ def _render_brew_install(layer: BrewInstall, ctx: RenderContext) -> list[str]:
 
 
 def _render_rust_install(ctx: RenderContext) -> list[str]:
-    cargo_bin = f"{ctx.home}/.cargo/bin"
+    # Same rationale as _render_nvm_install: if still root, use /opt so a
+    # later .user() switch can still traverse into CARGO_HOME/RUSTUP_HOME
+    # (default $HOME/.cargo under /root is mode 0700). If a non-root user
+    # is already active, use their own home — it's correctly owned and
+    # writable by them, and /opt would not be.
+    if ctx.is_root:
+        cargo_home = "/opt/cargo"
+        rustup_home = "/opt/rustup"
+    else:
+        cargo_home = f"{ctx.home}/.cargo"
+        rustup_home = f"{ctx.home}/.rustup"
     return [
         "# rust_install()",
         'SHELL ["/bin/bash", "-o", "pipefail", "-c"]',
+        f"ENV CARGO_HOME={cargo_home}",
+        f"ENV RUSTUP_HOME={rustup_home}",
         "RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
-        f"ENV PATH={cargo_bin}:$PATH",
+        f"ENV PATH={cargo_home}/bin:$PATH",
     ]
 
 
@@ -556,8 +604,12 @@ def _render_yarn_install(layer: YarnInstall, ctx: RenderContext) -> list[str]:
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
     validated = [validate_package(p) for p in layer.packages]
     cache = f"{ctx.home}/.cache/yarn"
+    # yarn isn't bundled with nvm-installed node (only official Docker node
+    # images ship it via corepack), so yarn_install() must not assume it's
+    # already on PATH — bootstrap it via npm first, same pattern as pnpm.
     return [
         f"# yarn_install({pkgs_repr})",
+        _exec_run([], ["npm", "install", "-g", "yarn"]),
         _exec_run(
             [f"--mount=type=cache,target={cache},sharing=locked"],
             ["yarn", "global", "add", *validated],

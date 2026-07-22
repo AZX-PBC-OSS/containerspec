@@ -113,7 +113,10 @@ class ImageSpec:
                 package install. One of ``"debian"``, ``"alpine"``, ``"rhel"``. When None
                 (default), inferred from the first ``.apt_install()``/``.apk_install()``/
                 ``.dnf_install()`` call. Set explicitly if ``.user()`` precedes any package
-                install on a non-Debian base (e.g. Alpine).
+                install on a non-Debian base (e.g. Alpine). An explicitly-set distro always
+                participates in the content hash, so adding it to a previously-distro-less
+                spec changes the cache key (one-time cache miss) even when rendering is
+                identical.
         """
         if not base or not base.strip():
             raise ValueError("from_registry requires a non-empty base image reference")
@@ -385,6 +388,8 @@ class ImageSpec:
             "pin_digest": self.pin_digest,
             "layers": [layer_payload(layer) for layer in self.layers],
         }
+        if self.distro:
+            payload["distro"] = self.distro
         if self.stages:
             payload["stages"] = [
                 {

@@ -114,10 +114,67 @@ class TestImageSpecHash:
         h = spec.content_hash(client=None)
         assert len(h) == 64  # works, doesn't raise
 
-    def test_distro_parameter_sets_context(self) -> None:
-        """from_registry(distro='alpine') doesn't change hash but enables correct rendering."""
+    def test_distro_explicit_differs_from_inferred(self) -> None:
+        """from_registry(distro='alpine') changes the hash — distro is part of the cache key.
+
+        Hashes the *declared* spec identity, not rendered output: with no layers both
+        specs render to just ``FROM base``, yet the explicit distro is a distinct cache
+        key. See test_distro_collision_with_user_layer for the case where rendering also
+        differs.
+        """
         a = ImageSpec.from_registry("base", pin_digest=False, distro="alpine")
         b = ImageSpec.from_registry("base", pin_digest=False)
+        assert a.content_hash(client=None) != b.content_hash(client=None)
+
+    def test_distro_collision_with_user_layer(self) -> None:
+        """Regression for issue #6: distro changes .user() rendering, so it must change the hash.
+
+        Two specs identical except for distro build different Dockerfiles (Debian
+        groupadd/useradd vs Alpine addgroup/adduser) and must not share a cache key.
+        """
+        debian = (
+            ImageSpec.from_registry("base", pin_digest=False, distro="debian")
+            .user(uid=1000, gid=1000, name="app")
+        )
+        alpine = (
+            ImageSpec.from_registry("base", pin_digest=False, distro="alpine")
+            .user(uid=1000, gid=1000, name="app")
+        )
+        assert debian.to_dockerfile() != alpine.to_dockerfile()
+        assert debian.content_hash(client=None) != alpine.content_hash(client=None)
+
+    def test_distro_explicit_debian_differs_from_none_inferred(self) -> None:
+        """Explicit distro='debian' is a distinct cache key from inferred-None, even though
+        both render identically (Debian is the fallback profile). Hashing the declared spec
+        identity future-proofs against later .user() calls that would diverge; this is
+        intentional — see issue #6.
+        """
+        a = (
+            ImageSpec.from_registry("base", pin_digest=False, distro="debian")
+            .user(uid=1000, gid=1000, name="app")
+        )
+        b = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .user(uid=1000, gid=1000, name="app")
+        )
+        assert a.to_dockerfile() == b.to_dockerfile()
+        assert a.content_hash(client=None) != b.content_hash(client=None)
+
+    def test_distro_explicit_in_payload(self) -> None:
+        payload = ImageSpec.from_registry(
+            "base", pin_digest=False, distro="alpine"
+        )._canonical_payload(client=None)
+        assert payload["distro"] == "alpine"
+
+    def test_distro_none_omitted_from_payload(self) -> None:
+        """Backward-compat contract: distro-less specs keep their pre-fix payload shape."""
+        payload = ImageSpec.from_registry("base", pin_digest=False)._canonical_payload(client=None)
+        assert "distro" not in payload
+
+    def test_distro_same_distro_same_hash(self) -> None:
+        """Sanity: two specs with the same explicit distro still hash equally."""
+        a = ImageSpec.from_registry("base", pin_digest=False, distro="alpine")
+        b = ImageSpec.from_registry("base", pin_digest=False, distro="alpine")
         assert a.content_hash(client=None) == b.content_hash(client=None)
 
     def test_distro_invalid_raises(self) -> None:

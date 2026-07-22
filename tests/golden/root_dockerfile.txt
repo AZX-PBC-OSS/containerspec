@@ -3,6 +3,7 @@ FROM nvidia/cuda:13.3.0-devel-ubuntu24.04
 
 # add_python("3.12")
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 RUN uv python install 3.12 && uv venv --python 3.12 /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 ENV VIRTUAL_ENV=/opt/venv

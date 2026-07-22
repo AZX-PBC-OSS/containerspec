@@ -35,7 +35,14 @@ class TestRenderContextCacheMounts:
         assert "/home/warden/.npm" in df
         assert "/root/.npm" not in df
 
-    def test_cargo_cache_follows_user(self) -> None:
+    def test_cargo_cache_is_fixed_opt_path(self) -> None:
+        """Cargo's cache mount targets CARGO_HOME=/opt/cargo regardless of user context.
+
+        Rustup installs to a fixed /opt location (not $HOME) so cargo/rustc stay
+        reachable after a later non-root .user() switch — /root defaults to 0700
+        and is unreadable by anyone else. The cache mount must target the same
+        path cargo actually reads from, so it can't be home-based either.
+        """
         spec = (
             ImageSpec.from_registry("base", pin_digest=False)
             .rust_install()
@@ -43,8 +50,8 @@ class TestRenderContextCacheMounts:
             .cargo_install("ripgrep")
         )
         df = spec.to_dockerfile()
-        assert "/home/warden/.cargo/registry" in df
-        assert "/root/.cargo/registry" not in df
+        assert "/opt/cargo/registry" in df
+        assert "/home/warden/.cargo" not in df
 
     def test_uv_cache_root_when_no_user(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).uv_pip_install("httpx")
@@ -82,7 +89,25 @@ class TestRenderContextChownSandwich:
 
 
 class TestRenderContextToolPaths:
-    def test_nvm_env_uses_resolved_home_after_user(self) -> None:
+    def test_nvm_env_uses_opt_when_installed_as_root(self) -> None:
+        """NVM_DIR is /opt/nvm when nvm_install() runs before any .user() call.
+
+        Regression: nvm previously always installed into ctx.home (/root when
+        still root). /root defaults to 0700, so a later non-root USER can't
+        traverse into it and every node/npm/npx symlink under /usr/local/bin
+        126s. /opt/nvm is world-readable+executable (0755) by default, so it
+        survives a later user switch.
+        """
+        spec = (
+            ImageSpec.from_registry("base", pin_digest=False).apt_install("curl").nvm_install("22")
+        )
+        df = spec.to_dockerfile()
+        assert "ENV NVM_DIR=/opt/nvm" in df
+        assert "/root/.nvm" not in df
+
+    def test_nvm_env_uses_own_home_when_installed_as_non_root(self) -> None:
+        """NVM_DIR stays $HOME/.nvm when nvm_install() runs after .user() — that
+        home is owned by the active user, so it's already safe and writable."""
         spec = (
             ImageSpec.from_registry("base", pin_digest=False)
             .apt_install("curl")
@@ -91,21 +116,24 @@ class TestRenderContextToolPaths:
         )
         df = spec.to_dockerfile()
         assert "ENV NVM_DIR=/home/warden/.nvm" in df
-        assert "$HOME" not in df.split("NVM_DIR=")[1].split("\n")[0]
+        assert "/opt/nvm" not in df
 
-    def test_nvm_env_uses_root_before_user(self) -> None:
-        spec = (
-            ImageSpec.from_registry("base", pin_digest=False).apt_install("curl").nvm_install("22")
-        )
-        df = spec.to_dockerfile()
-        assert "ENV NVM_DIR=/root/.nvm" in df
+    def test_rust_path_uses_opt_when_installed_as_root(self) -> None:
+        """CARGO_HOME/RUSTUP_HOME/PATH use /opt when rust_install() runs before .user().
 
-    def test_rust_path_root_before_user(self) -> None:
+        Same class of bug as nvm: rustup defaults to installing under $HOME
+        (/root while still root), which becomes unreadable to a later
+        non-root user.
+        """
         spec = ImageSpec.from_registry("base", pin_digest=False).rust_install()
         df = spec.to_dockerfile()
-        assert "ENV PATH=/root/.cargo/bin:$PATH" in df
+        assert "ENV CARGO_HOME=/opt/cargo" in df
+        assert "ENV RUSTUP_HOME=/opt/rustup" in df
+        assert "ENV PATH=/opt/cargo/bin:$PATH" in df
+        assert "/root/.cargo" not in df
 
-    def test_rust_path_home_after_user(self) -> None:
+    def test_rust_path_uses_own_home_when_installed_as_non_root(self) -> None:
+        """CARGO_HOME/PATH stay $HOME/.cargo when rust_install() runs after .user()."""
         spec = (
             ImageSpec.from_registry("base", pin_digest=False)
             .user(uid=1000, gid=1000, name="warden")
@@ -113,6 +141,7 @@ class TestRenderContextToolPaths:
         )
         df = spec.to_dockerfile()
         assert "ENV PATH=/home/warden/.cargo/bin:$PATH" in df
+        assert "/opt/cargo" not in df
 
     def test_nvm_sets_npm_prefix(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).nvm_install("22")

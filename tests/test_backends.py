@@ -272,6 +272,41 @@ class TestBuildahBackend:
 
     @patch("containerspec.backends.asyncio.create_subprocess_exec")
     @pytest.mark.asyncio
+    async def test_builds_passed_dockerfile_not_context_dockerfile(
+        self, mock_exec: MagicMock, tmp_path: Path
+    ) -> None:
+        """Buildah must build the passed dockerfile arg, never sniff the context dir.
+
+        A Dockerfile sitting in context_path must not hijack the build — the same
+        failure class that C1 fixed for BuildKit. build() forwards the rewritten
+        Dockerfile as the arg; the backend must hand buildah exactly that.
+        """
+        (tmp_path / "Dockerfile").write_text("FROM decoy:latest\n")
+        built_content: list[str] = []
+
+        def capture(*cmd: str, **kwargs: object) -> AsyncMock:
+            if "bud" in cmd:
+                built_content.append(Path(cmd[cmd.index("-f") + 1]).read_text())
+            return _ok_proc()
+
+        mock_exec.side_effect = capture
+        with patch("containerspec.rootfs.shutil.which", return_value="/usr/bin/buildah"):
+            backend = BuildahBackend()
+            await backend.solve_and_export(
+                dockerfile="FROM rendered:latest\n",
+                tag="x:sha-abc",
+                output_type="oci",
+                output_path="/tmp/tar.tar",
+                labels={},
+                pull=False,
+                context_path=str(tmp_path),
+            )
+        assert built_content == ["FROM rendered:latest\n"]
+        bud_cmd = list(mock_exec.call_args_list[0].args)
+        assert bud_cmd[-1] == str(tmp_path)
+
+    @patch("containerspec.backends.asyncio.create_subprocess_exec")
+    @pytest.mark.asyncio
     async def test_raises_builderror_for_docker_output(self, mock_exec: MagicMock) -> None:
         mock_exec.return_value = _ok_proc()
         with patch("containerspec.rootfs.shutil.which", return_value="/usr/bin/buildah"):

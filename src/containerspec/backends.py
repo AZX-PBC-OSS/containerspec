@@ -81,7 +81,7 @@ class BuildKitBackend:
     """Build via ``docker buildx build`` CLI. Supports all output types.
 
     Dockerfile is written to a temp file and passed via ``-f`` — more robust
-    than stdin piping, and the temp file is preserved on failure for debugging.
+    than stdin piping. The temp file is removed after the build.
     """
 
     url: str | None = None
@@ -224,8 +224,9 @@ class DockerBackend:
         }
         if context_path and context_path != ".":
             # The staged context is self-contained: _prepare_build_context wrote
-            # the rewritten Dockerfile into it, and the daemon resolves
-            # ``dockerfile`` relative to the context.
+            # the rewritten Dockerfile into it. ``dockerfile`` must stay a
+            # context-relative name — the daemon resolves it inside the uploaded
+            # context, so an absolute host path would not be found.
             build_kwargs["dockerfile"] = "Dockerfile"
             build_kwargs["path"] = context_path
             await asyncio.to_thread(self.client.images.build, **build_kwargs)

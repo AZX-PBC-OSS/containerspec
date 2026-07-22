@@ -57,6 +57,33 @@ class TestBuildStringShortcut:
         assert kwargs["pull"] is True
 
 
+class TestBuildStagedContextHandoff:
+    @pytest.mark.asyncio
+    async def test_backend_receives_rewritten_dockerfile_for_copy_layers(
+        self, tmp_path: Path
+    ) -> None:
+        """Backends must get the context-rewritten Dockerfile, not the original.
+
+        The staged context contains copied sources under ``ctx_*`` names; a
+        Dockerfile still COPYing the original paths cannot build from it.
+        """
+        src_file = tmp_path / "app.py"
+        src_file.write_text("print('hi')\n")
+        client = MagicMock()
+        client.images.get.side_effect = Exception("not found")
+        spec = ImageSpec.from_registry("python:3.12", pin_digest=False).copy(
+            str(src_file), "/app/app.py"
+        )
+        backend = AsyncMock()
+
+        await spec.build("warden/test", client=client, backend=backend)
+
+        kwargs = backend.solve_and_export.call_args.kwargs
+        assert kwargs["context_path"] != "."
+        assert f"COPY {src_file}" not in kwargs["dockerfile"]
+        assert "COPY ctx_" in kwargs["dockerfile"]
+
+
 class TestBuildRootfsTarget:
     @pytest.mark.asyncio
     async def test_dispatches_to_backend_with_local_output(self, tmp_path: Path) -> None:

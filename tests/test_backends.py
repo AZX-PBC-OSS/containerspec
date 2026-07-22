@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -46,6 +47,33 @@ class TestBuildKitBackend:
         # Dockerfile is passed via -f <tempfile>, never via stdin.
         assert "-f" in cmd
         assert "stdin" not in mock_exec.call_args.kwargs
+
+    @patch("containerspec.backends.asyncio.create_subprocess_exec")
+    @pytest.mark.asyncio
+    async def test_rendered_dockerfile_wins_over_cwd_dockerfile(
+        self, mock_exec: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stray Dockerfile in the build context must not hijack the build."""
+        (tmp_path / "Dockerfile").write_text("FROM decoy:latest\n")
+        monkeypatch.chdir(tmp_path)
+        built_content: list[str] = []
+
+        def capture(*cmd: str, **kwargs: object) -> AsyncMock:
+            dockerfile_arg = cmd[cmd.index("-f") + 1]
+            built_content.append(Path(dockerfile_arg).read_text())
+            return _ok_proc()
+
+        mock_exec.side_effect = capture
+        backend = BuildKitBackend()
+        await backend.solve_and_export(
+            dockerfile="FROM rendered:latest\n",
+            tag="x:sha-abc",
+            output_type="docker",
+            output_path=None,
+            labels={},
+            pull=False,
+        )
+        assert built_content == ["FROM rendered:latest\n"]
 
     @patch("containerspec.backends.asyncio.create_subprocess_exec")
     @pytest.mark.asyncio
@@ -244,6 +272,41 @@ class TestBuildahBackend:
 
     @patch("containerspec.backends.asyncio.create_subprocess_exec")
     @pytest.mark.asyncio
+    async def test_builds_passed_dockerfile_not_context_dockerfile(
+        self, mock_exec: MagicMock, tmp_path: Path
+    ) -> None:
+        """Buildah must build the passed dockerfile arg, never sniff the context dir.
+
+        A Dockerfile sitting in context_path must not hijack the build — the same
+        failure class that C1 fixed for BuildKit. build() forwards the rewritten
+        Dockerfile as the arg; the backend must hand buildah exactly that.
+        """
+        (tmp_path / "Dockerfile").write_text("FROM decoy:latest\n")
+        built_content: list[str] = []
+
+        def capture(*cmd: str, **kwargs: object) -> AsyncMock:
+            if "bud" in cmd:
+                built_content.append(Path(cmd[cmd.index("-f") + 1]).read_text())
+            return _ok_proc()
+
+        mock_exec.side_effect = capture
+        with patch("containerspec.rootfs.shutil.which", return_value="/usr/bin/buildah"):
+            backend = BuildahBackend()
+            await backend.solve_and_export(
+                dockerfile="FROM rendered:latest\n",
+                tag="x:sha-abc",
+                output_type="oci",
+                output_path="/tmp/tar.tar",
+                labels={},
+                pull=False,
+                context_path=str(tmp_path),
+            )
+        assert built_content == ["FROM rendered:latest\n"]
+        bud_cmd = list(mock_exec.call_args_list[0].args)
+        assert bud_cmd[-1] == str(tmp_path)
+
+    @patch("containerspec.backends.asyncio.create_subprocess_exec")
+    @pytest.mark.asyncio
     async def test_raises_builderror_for_docker_output(self, mock_exec: MagicMock) -> None:
         mock_exec.return_value = _ok_proc()
         with patch("containerspec.rootfs.shutil.which", return_value="/usr/bin/buildah"):
@@ -367,6 +430,30 @@ class TestDockerBackend:
         assert kwargs["pull"] is True
         assert kwargs["rm"] is True
         assert kwargs["labels"] == {"containerspec.image_spec": "{}"}
+
+    @pytest.mark.asyncio
+    async def test_staged_context_uses_context_dockerfile(self, tmp_path: Path) -> None:
+        """With a staged context, the daemon must build the context's own Dockerfile.
+
+        docker-py resolves ``dockerfile=`` inside the context tarball, so an
+        absolute host path there is never found.
+        """
+        (tmp_path / "Dockerfile").write_text("FROM base\nCOPY ctx_ab12cd34_app.py /app.py\n")
+        client = MagicMock()
+        client.images.build.return_value = (MagicMock(), [])
+        backend = DockerBackend(client=client)
+        await backend.solve_and_export(
+            dockerfile="FROM base\nCOPY ./app.py /app.py\n",
+            tag="x:sha-abc",
+            output_type="docker",
+            output_path=None,
+            labels={},
+            pull=False,
+            context_path=str(tmp_path),
+        )
+        kwargs = client.images.build.call_args.kwargs
+        assert kwargs["path"] == str(tmp_path)
+        assert kwargs["dockerfile"] == "Dockerfile"
 
     @pytest.mark.asyncio
     async def test_raises_builderror_for_non_docker_output(self) -> None:

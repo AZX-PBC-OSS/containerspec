@@ -331,9 +331,20 @@ class TestMultiStageBuild:
         built = await runtime.build("containerspec-test-multistage")
         assert built.tag.startswith("containerspec-test-multistage:sha-")
 
-        result = subprocess.run(  # noqa: S603, S607
-            ["docker", "run", "--rm", "--entrypoint", "", built.tag, "cat", "/usr/share/nginx/html/index.html"],
-            capture_output=True, timeout=30, check=False,
+        result = subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "",
+                built.tag,
+                "cat",
+                "/usr/share/nginx/html/index.html",
+            ],
+            capture_output=True,
+            timeout=30,
+            check=False,
         )
         assert result.returncode == 0, result.stderr.decode()
         assert b"Hello from containerspec" in result.stdout

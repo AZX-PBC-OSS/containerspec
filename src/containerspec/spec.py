@@ -45,8 +45,9 @@ from containerspec.layers import (
     frozen_mapping,
     layer_payload,
 )
-from containerspec.renderers import render_dockerfile, validate_image_ref, validate_name
+from containerspec.renderers import render_dockerfile
 from containerspec.rootfs import MissingToolError
+from containerspec.validation import validate_image_ref, validate_name
 
 if TYPE_CHECKING:
     from containerspec.targets import BuildTarget

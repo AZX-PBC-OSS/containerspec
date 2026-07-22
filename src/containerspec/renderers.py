@@ -269,8 +269,7 @@ def _render_add_python(layer: AddPython) -> list[str]:
         f'# add_python("{layer.version}")',
         "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/",
         "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
-        f"RUN uv python install {layer.version} "
-        f"&& uv venv --python {layer.version} /opt/venv",
+        f"RUN uv python install {layer.version} && uv venv --python {layer.version} /opt/venv",
         "ENV PATH=/opt/venv/bin:$PATH",
         "ENV VIRTUAL_ENV=/opt/venv",
     ]

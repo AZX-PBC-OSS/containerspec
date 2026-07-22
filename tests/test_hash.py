@@ -132,13 +132,11 @@ class TestImageSpecHash:
         Two specs identical except for distro build different Dockerfiles (Debian
         groupadd/useradd vs Alpine addgroup/adduser) and must not share a cache key.
         """
-        debian = (
-            ImageSpec.from_registry("base", pin_digest=False, distro="debian")
-            .user(uid=1000, gid=1000, name="app")
+        debian = ImageSpec.from_registry("base", pin_digest=False, distro="debian").user(
+            uid=1000, gid=1000, name="app"
         )
-        alpine = (
-            ImageSpec.from_registry("base", pin_digest=False, distro="alpine")
-            .user(uid=1000, gid=1000, name="app")
+        alpine = ImageSpec.from_registry("base", pin_digest=False, distro="alpine").user(
+            uid=1000, gid=1000, name="app"
         )
         assert debian.to_dockerfile() != alpine.to_dockerfile()
         assert debian.content_hash(client=None) != alpine.content_hash(client=None)
@@ -149,14 +147,10 @@ class TestImageSpecHash:
         identity future-proofs against later .user() calls that would diverge; this is
         intentional — see issue #6.
         """
-        a = (
-            ImageSpec.from_registry("base", pin_digest=False, distro="debian")
-            .user(uid=1000, gid=1000, name="app")
+        a = ImageSpec.from_registry("base", pin_digest=False, distro="debian").user(
+            uid=1000, gid=1000, name="app"
         )
-        b = (
-            ImageSpec.from_registry("base", pin_digest=False)
-            .user(uid=1000, gid=1000, name="app")
-        )
+        b = ImageSpec.from_registry("base", pin_digest=False).user(uid=1000, gid=1000, name="app")
         assert a.to_dockerfile() == b.to_dockerfile()
         assert a.content_hash(client=None) != b.content_hash(client=None)
 

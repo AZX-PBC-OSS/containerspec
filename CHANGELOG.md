@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.0...v0.1.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* build context staging for copy() — no more broken multi-stage builds ([a368a40](https://github.com/AZX-PBC-OSS/containerspec/commit/a368a4044961e77be5c53ef1608f7113030ad72f))
+* build context staging for copy() — no more broken multi-stage builds ([bb1dfc4](https://github.com/AZX-PBC-OSS/containerspec/commit/bb1dfc46f98689e3a405356b952df220e85181ac))
+
 ## 0.1.0 (2026-07-22)
 
 

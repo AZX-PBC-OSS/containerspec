@@ -1,32 +1,30 @@
 {
   "release-type": "python",
   "package-name": "containerspec",
+  "include-component-in-tag": false,
   "packages": {
     ".": {
-      "component": "containerspec",
-      "package-name": "containerspec",
       "release-type": "python",
+      "package-name": "containerspec",
       "extra-files": [
         {
           "type": "generic",
-          "path": "src/containerspec/__init__.py",
-          "jsonpath": "$.__version__"
+          "path": "src/containerspec/__init__.py"
         }
       ]
     }
   },
   "changelog-sections": [
     {"type": "feat", "section": "Features"},
-    {"type": "feature", "section": "Features"},
     {"type": "fix", "section": "Bug Fixes"},
-    {"type": "perf", "section": "Performance Improvements"},
+    {"type": "perf", "section": "Performance"},
     {"type": "revert", "section": "Reverts"},
     {"type": "docs", "section": "Documentation"},
+    {"type": "refactor", "section": "Code Refactoring"},
+    {"type": "build", "section": "Build System"},
+    {"type": "ci", "section": "Continuous Integration"},
     {"type": "style", "section": "Styles", "hidden": true},
     {"type": "chore", "section": "Miscellaneous Chores", "hidden": true},
-    {"type": "refactor", "section": "Code Refactoring"},
-    {"type": "test", "section": "Tests", "hidden": true},
-    {"type": "build", "section": "Build System"},
-    {"type": "ci", "section": "Continuous Integration"}
+    {"type": "test", "section": "Tests", "hidden": true}
   ]
 }

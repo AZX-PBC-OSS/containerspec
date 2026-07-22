@@ -265,7 +265,11 @@ class TestDockerfile:
 
     def test_env_key_allows_leading_underscore(self) -> None:
         """Common Unix env vars start with an underscore — must not be rejected."""
-        df = ImageSpec.from_registry("base", pin_digest=False).env({"_JAVA_OPTIONS": "-Xmx1g"}).to_dockerfile()
+        df = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .env({"_JAVA_OPTIONS": "-Xmx1g"})
+            .to_dockerfile()
+        )
         assert "ENV _JAVA_OPTIONS=-Xmx1g" in df
 
     def test_version_aliases_render(self) -> None:

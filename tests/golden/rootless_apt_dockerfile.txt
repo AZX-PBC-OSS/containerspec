@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+FROM nvidia/cuda:13.3.0-devel-ubuntu24.04
+
+# add_python("3.12")
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+RUN uv python install 3.12 && uv venv --python 3.12 /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+ENV VIRTUAL_ENV=/opt/venv
+
+# apt_install("build-essential", "git")
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends build-essential git
+
+# uv_pip_install("flashinfer==0.2.0", "vllm")
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    UV_LINK_MODE=copy uv pip install flashinfer==0.2.0 vllm
+
+# pip_install("huggingface_hub[hf_transfer]")
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip install --no-cache-dir huggingface_hub[hf_transfer]
+
+# env({"HF_HOME": "/home/warden/.cache/huggingface", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
+ENV HF_HOME=/home/warden/.cache/huggingface
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+# workdir("/app")
+WORKDIR /app
+
+# user(uid=1000, gid=1000, name="warden")
+RUN groupadd -g 1000 warden && useradd -u 1000 -g 1000 -m -d /home/warden warden
+USER 1000:1000
+
+# chown("/home/warden/.cache/huggingface") — resolved to uid=1000, gid=1000 from preceding .user()
+USER root
+RUN mkdir -p /home/warden/.cache/huggingface && chown -R 1000:1000 /home/warden/.cache/huggingface
+USER 1000:1000
+
+# entrypoint([])
+ENTRYPOINT []

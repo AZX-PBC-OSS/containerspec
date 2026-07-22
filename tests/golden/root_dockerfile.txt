@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.7
+FROM nvidia/cuda:13.3.0-devel-ubuntu24.04
+
+# add_python("3.12")
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+RUN uv python install 3.12 && uv venv --python 3.12 /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+ENV VIRTUAL_ENV=/opt/venv
+
+# uv_pip_install("vllm")
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    UV_LINK_MODE=copy uv pip install vllm
+
+# env({"HF_HOME": "/root/.cache/huggingface"})
+ENV HF_HOME=/root/.cache/huggingface
+
+# entrypoint([])
+ENTRYPOINT []

@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1.7
+FROM alpine:3.20
+
+# apk_install("openrc", "util-linux")
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --no-cache openrc util-linux
+
+# run_commands("ln -s agetty /etc/init.d/agetty.ttyS0")
+RUN ln -s agetty /etc/init.d/agetty.ttyS0
+
+# env({"TERM": "linux"})
+ENV TERM=linux
+
+# user(uid=1000, gid=1000, name="warden")
+RUN addgroup -g 1000 warden && adduser -u 1000 -G warden -D -h /home/warden warden
+USER 1000:1000
+
+# entrypoint([])
+ENTRYPOINT []

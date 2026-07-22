@@ -45,7 +45,7 @@ from containerspec.layers import (
     frozen_mapping,
     layer_payload,
 )
-from containerspec.renderers import render_dockerfile
+from containerspec.renderers import render_dockerfile, validate_image_ref, validate_name
 from containerspec.rootfs import MissingToolError
 
 if TYPE_CHECKING:
@@ -441,11 +441,13 @@ class ImageSpec:
             # "only one syntax parser directive can be used").
             stage_lines = stage_lines[1:]
             if stage_lines and stage_lines[0].startswith("FROM "):
-                stage_lines[0] = f"FROM {stage.spec.base} AS {stage.name}"
+                base = validate_image_ref(stage.spec.base, field="stage base image")
+                name = validate_name(stage.name, field="stage name")
+                stage_lines[0] = f"FROM {base} AS {name}"
             lines.extend(stage_lines)
             lines.append("")
 
-        lines.append(f"FROM {from_ref}")
+        lines.append(f"FROM {validate_image_ref(from_ref, field='base image')}")
         for i, layer in enumerate(self.layers):
             lines.append("")
             lines.extend(render_dockerfile(self, layer, i))

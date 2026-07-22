@@ -180,6 +180,48 @@ class TestDockerfile:
         with pytest.raises(ValueError):
             spec.to_dockerfile()
 
+    def test_copy_from_stage_rejects_newline_injection(self) -> None:
+        """copy_from_stage src/dest must be guarded like copy (same directive sink)."""
+        builder = ImageSpec.from_registry("node:22", pin_digest=False).with_stage("builder")
+        spec = ImageSpec.from_registry("base", pin_digest=False).copy_from_stage(
+            builder, "/dist", "/out\nUSER root"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_env_rejects_newline_injection(self) -> None:
+        """An env value with a newline must not inject a Dockerfile directive."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).env({"A": "x\nUSER root"})
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_workdir_trailing_newline_rejected(self) -> None:
+        """A trailing newline must be rejected (anchor uses fullmatch, not $)."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).workdir("/app\n")
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_copy_current_dir_and_globs_and_dotfiles_render(self) -> None:
+        """Canonical COPY idioms — '.', globs, dotfiles, relative — must render."""
+        for src in (".", "src/*.py", ".env", "../shared"):
+            spec = ImageSpec.from_registry("base", pin_digest=False).copy(
+                src, "/app", content_hash="sha256:abc"
+            )
+            assert f"COPY {src} /app" in spec.to_dockerfile()
+
+    def test_version_aliases_render(self) -> None:
+        """Real nvm/uv version selectors (lts/<name>, pypy@X) must not be rejected."""
+        assert "nvm install lts/hydrogen" in (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .nvm_install("lts/hydrogen")
+            .to_dockerfile()
+        )
+        assert "uv python install pypy@3.10" in (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .add_python("pypy@3.10")
+            .to_dockerfile()
+        )
+
     def test_ordinary_paths_and_names_still_render(self) -> None:
         """Legitimate names and paths must not be rejected by the validation."""
         spec = (

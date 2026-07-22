@@ -72,37 +72,52 @@ def validate_package(name: str) -> str:
     return name
 
 
-# Identifier-like fields (user names, tool versions) render into shell-form RUN
-# lines, so they must never carry shell metacharacters. Narrow allowlist.
-_IDENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
-# Path fields (chown/workdir/copy) render into RUN commands and COPY/WORKDIR
-# directives. Allow the path separator and common path chars; reject spaces,
-# newlines, and shell metacharacters that would break out or inject a directive.
-_PATH_PATTERN = re.compile(r"^[A-Za-z0-9/~][A-Za-z0-9._/~+-]*$")
+# These fields render into shell-form RUN lines and COPY/WORKDIR/FROM/ENV
+# directives, so they must never carry shell metacharacters, whitespace, or
+# newlines (which would break out of a command or inject a new directive).
+# fullmatch anchors implicitly and — unlike a trailing ``$`` — does not accept a
+# trailing newline. Three allowlists by field kind:
+#   name     — user names: strict, no slash/glob.
+#   version  — tool versions: also allow ``/`` and ``@`` (nvm ``lts/hydrogen``,
+#              uv ``pypy@3.10``); glob ``*`` stays out (dangerous in shell RUN).
+#   path     — COPY/WORKDIR/chown paths: also allow leading ``.``, ``..``, and
+#              glob ``*`` (``COPY . /app``, ``.env``, ``src/*.py``).
+_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]*")
+_PATH_PATTERN = re.compile(r"[A-Za-z0-9._/~*][A-Za-z0-9._/~*+-]*")
+# Image references (FROM): registry/repo:tag@digest — allow ``:`` and ``@``.
+_IMAGE_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*")
 
 
-def validate_identifier(value: str, *, field: str) -> str:
-    """Validate an identifier-like field (user name, version) against injection."""
+def _validate(value: str, *, field: str, pattern: re.Pattern[str]) -> str:
     if not value:
         raise ValueError(f"{field} cannot be empty")
-    if not _IDENT_PATTERN.match(value):
+    if not pattern.fullmatch(value):
         raise ValueError(
-            f"Invalid {field}: {value!r}. Must match {_IDENT_PATTERN.pattern} "
-            f"— shell metacharacters are not allowed"
+            f"Invalid {field}: {value!r}. Must match {pattern.pattern} "
+            f"— shell metacharacters, whitespace, and newlines are not allowed"
         )
     return value
+
+
+def validate_name(value: str, *, field: str) -> str:
+    """Validate a user/stage name against shell/directive injection."""
+    return _validate(value, field=field, pattern=_NAME_PATTERN)
+
+
+def validate_version(value: str, *, field: str) -> str:
+    """Validate a tool version selector against shell/directive injection."""
+    return _validate(value, field=field, pattern=_VERSION_PATTERN)
 
 
 def validate_path(value: str, *, field: str) -> str:
     """Validate a filesystem-path field against shell/directive injection."""
-    if not value:
-        raise ValueError(f"{field} cannot be empty")
-    if not _PATH_PATTERN.match(value):
-        raise ValueError(
-            f"Invalid {field}: {value!r}. Must match {_PATH_PATTERN.pattern} "
-            f"— shell metacharacters and whitespace are not allowed"
-        )
-    return value
+    return _validate(value, field=field, pattern=_PATH_PATTERN)
+
+
+def validate_image_ref(value: str, *, field: str) -> str:
+    """Validate a FROM image reference against directive injection."""
+    return _validate(value, field=field, pattern=_IMAGE_REF_PATTERN)
 
 
 def _exec_run(mounts: list[str], args: list[str]) -> str:
@@ -298,7 +313,7 @@ def render_layer(spec: ImageSpec, layer: Layer, index: int, ctx: RenderContext) 
 
 
 def _render_add_python(layer: AddPython) -> list[str]:
-    version = validate_identifier(layer.version, field="add_python version")
+    version = validate_version(layer.version, field="add_python version")
     return [
         f'# add_python("{version}")',
         "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/",
@@ -385,6 +400,11 @@ def _render_pip_install(layer: PipInstall, ctx: RenderContext) -> list[str]:
 def _render_env(layer: Env) -> list[str]:
     lines = [f"# env({json.dumps(dict(layer.vars))})"]
     for k, v in layer.vars.items():
+        # Keys are identifier-like; values may hold anything EXCEPT control
+        # characters, which would break the line and inject a directive.
+        validate_name(k, field="env key")
+        if any(c in v for c in "\n\r"):
+            raise ValueError(f"Invalid env value for {k!r}: control characters are not allowed")
         if " " in v or '"' in v:
             escaped = v.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'ENV {k}="{escaped}"')
@@ -430,7 +450,7 @@ def _render_user(layer: User, ctx: RenderContext) -> list[str]:
         or ctx.distro
     )
     profile = get_profile(effective_distro if effective_distro else "debian")
-    name = validate_identifier(layer.name, field="user name")
+    name = validate_name(layer.name, field="user name")
     group_cmd = profile.group_add.format(gid=layer.gid, name=name)
     user_cmd = profile.user_add.format(uid=layer.uid, gid=layer.gid, name=name)
     return [
@@ -474,14 +494,17 @@ def _render_copy(layer: Copy) -> list[str]:
 
 
 def _render_copy_from_stage(layer: CopyFromStage) -> list[str]:
+    stage_name = validate_name(layer.stage_name, field="copy_from_stage stage name")
+    src = validate_path(layer.src, field="copy_from_stage src")
+    dest = validate_path(layer.dest, field="copy_from_stage dest")
     return [
-        f'# copy_from_stage("{layer.stage_name}", "{layer.src}", "{layer.dest}")',
-        f"COPY --from={layer.stage_name} {layer.src} {layer.dest}",
+        f'# copy_from_stage("{stage_name}", "{src}", "{dest}")',
+        f"COPY --from={stage_name} {src} {dest}",
     ]
 
 
 def _render_nvm_install(layer: NvmInstall, ctx: RenderContext) -> list[str]:
-    version = validate_identifier(layer.version, field="nvm version")
+    version = validate_version(layer.version, field="nvm version")
     # If we're still root at this point, a later .user() may switch to a
     # non-root account that needs to run the installed node/npm/npx. /root
     # is mode 0700 (unreadable by others), so installing under ctx.home

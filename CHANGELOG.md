@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.4...v0.1.5) (2026-07-22)
+
+
+### Bug Fixes
+
+* rootless cache mounts + pnpm/yarn bootstrap ([f182168](https://github.com/AZX-PBC-OSS/containerspec/commit/f1821689c9a3f1549325d8d2dd2bc64be376dd71))
+* UV_PYTHON_INSTALL_DIR=/opt/uv-python for rootless venv access ([f634537](https://github.com/AZX-PBC-OSS/containerspec/commit/f6345378dc3ab0ebe9f387eeac5dd9e737d984a3))
+
 ## [0.1.4](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.3...v0.1.4) (2026-07-22)
 
 

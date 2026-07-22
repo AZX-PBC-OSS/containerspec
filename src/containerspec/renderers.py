@@ -8,7 +8,6 @@ so each layer renders with correct paths, cache mounts, and user switches.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -17,6 +16,7 @@ from containerspec.layers import (
     AddPython,
     ApkInstall,
     AptInstall,
+    AurInstall,
     BrewInstall,
     CargoInstall,
     Chown,
@@ -45,31 +45,21 @@ from containerspec.layers import (
     YarnInstall,
     ZypperInstall,
 )
+from containerspec.validation import (
+    validate_env_key,
+    validate_fs_path,
+    validate_int,
+    validate_name,
+    validate_package,
+    validate_path,
+    validate_version,
+)
 
 if TYPE_CHECKING:
     from containerspec.spec import ImageSpec
 
 NVM_VERSION = "0.40.6"
 NVM_INSTALL_SCRIPT = f"https://raw.githubusercontent.com/nvm-sh/nvm/v{NVM_VERSION}/install.sh"
-
-# Defense-in-depth: rejects shell metacharacters (;, |, &, $, backtick, parens,
-# braces, spaces, quotes, glob chars) that would be dangerous if ever rendered
-# into shell-form RUN. PEP 508 / npm semver characters (>=, <, >, !, ~, ,, ^, #)
-# and a leading @ (npm scoped packages) are allowed because install renderers
-# emit exec-form RUN, which bypasses the shell entirely — arguments are passed
-# as literal JSON-array strings with no shell interpretation.
-_PKG_PATTERN = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._+:=@~/\[\]<>!~,^#-]*$")
-
-
-def validate_package(name: str) -> str:
-    """Validate a package name against a safe pattern to prevent shell injection."""
-    if not name:
-        raise ValueError("Package name cannot be empty")
-    if not _PKG_PATTERN.match(name):
-        raise ValueError(
-            f"Invalid package name: {name!r}. Package names must match {_PKG_PATTERN.pattern}"
-        )
-    return name
 
 
 def _exec_run(mounts: list[str], args: list[str]) -> str:
@@ -172,7 +162,7 @@ class RenderContext:
             self.package_manager = "apk"
         elif isinstance(layer, DnfInstall):
             self.package_manager = "dnf"
-        elif isinstance(layer, PacmanInstall):
+        elif isinstance(layer, PacmanInstall | AurInstall):
             self.package_manager = "pacman"
         elif isinstance(layer, ZypperInstall):
             self.package_manager = "zypper"
@@ -213,6 +203,8 @@ def render_layer(spec: ImageSpec, layer: Layer, index: int, ctx: RenderContext) 
         return _render_dnf_install(layer)
     if isinstance(layer, PacmanInstall):
         return _render_pacman_install(layer)
+    if isinstance(layer, AurInstall):
+        return _render_aur_install(layer)
     if isinstance(layer, ZypperInstall):
         return _render_zypper_install(layer)
     if isinstance(layer, UvPipInstall):
@@ -265,11 +257,12 @@ def render_layer(spec: ImageSpec, layer: Layer, index: int, ctx: RenderContext) 
 
 
 def _render_add_python(layer: AddPython) -> list[str]:
+    version = validate_version(layer.version, field="add_python version")
     return [
-        f'# add_python("{layer.version}")',
+        f'# add_python("{version}")',
         "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/",
         "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
-        f"RUN uv python install {layer.version} && uv venv --python {layer.version} /opt/venv",
+        f"RUN uv python install {version} && uv venv --python {version} /opt/venv",
         "ENV PATH=/opt/venv/bin:$PATH",
         "ENV VIRTUAL_ENV=/opt/venv",
     ]
@@ -351,7 +344,18 @@ def _render_pip_install(layer: PipInstall, ctx: RenderContext) -> list[str]:
 def _render_env(layer: Env) -> list[str]:
     lines = [f"# env({json.dumps(dict(layer.vars))})"]
     for k, v in layer.vars.items():
-        if " " in v or '"' in v:
+        # Keys are env-var names; values may hold anything EXCEPT control
+        # characters (a tab/newline can start a second ENV assignment or a new
+        # directive) or a trailing backslash (a line-continuation that swallows
+        # the next directive).
+        validate_env_key(k, field="env key")
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in v):
+            raise ValueError(f"Invalid env value for {k!r}: control characters are not allowed")
+        if v.endswith("\\"):
+            raise ValueError(f"Invalid env value for {k!r}: a trailing backslash is not allowed")
+        # Any interior backslash must go through the quoted branch, which escapes
+        # it — an unquoted ``ENV k=a\b`` is otherwise mangled by BuildKit's lexer.
+        if " " in v or '"' in v or "\\" in v:
             escaped = v.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'ENV {k}="{escaped}"')
         else:
@@ -368,13 +372,14 @@ def _render_run_commands(layer: RunCommands) -> list[str]:
 
 
 def _render_workdir(layer: Workdir) -> list[str]:
-    return [f'# workdir("{layer.path}")', f"WORKDIR {layer.path}"]
+    path = validate_fs_path(layer.path, field="workdir path")
+    return [f'# workdir("{path}")', f"WORKDIR {path}"]
 
 
 def _render_chown(spec: ImageSpec, layer: Chown, index: int, ctx: RenderContext) -> list[str]:
     """Render chown with USER root sandwich when non-root user is active."""
     uid, gid = spec.resolve_chown_uid_gid(layer, index=index)
-    path = layer.path
+    path = validate_fs_path(layer.path, field="chown path")
     source = " from preceding .user()" if layer.uid is None and layer.gid is None else ""
     lines: list[str] = [f'# chown("{path}") — resolved to uid={uid}, gid={gid}{source}']
 
@@ -395,55 +400,66 @@ def _render_user(layer: User, ctx: RenderContext) -> list[str]:
         or ctx.distro
     )
     profile = get_profile(effective_distro if effective_distro else "debian")
-    group_cmd = profile.group_add.format(gid=layer.gid, name=layer.name)
-    user_cmd = profile.user_add.format(uid=layer.uid, gid=layer.gid, name=layer.name)
+    name = validate_name(layer.name, field="user name")
+    uid = validate_int(layer.uid, field="user uid")
+    gid = validate_int(layer.gid, field="user gid")
+    group_cmd = profile.group_add.format(gid=gid, name=name)
+    user_cmd = profile.user_add.format(uid=uid, gid=gid, name=name)
     return [
-        f'# user(uid={layer.uid}, gid={layer.gid}, name="{layer.name}")',
+        f'# user(uid={uid}, gid={gid}, name="{name}")',
         f"RUN {group_cmd} && {user_cmd}",
-        f"USER {layer.uid}:{layer.gid}",
+        f"USER {uid}:{gid}",
     ]
 
 
 def _render_entrypoint(layer: Entrypoint) -> list[str]:
     if layer.commands is None:
         return ["# entrypoint(None)"]
-    cmds_repr = ", ".join(f'"{c}"' for c in layer.commands)
+    # json.dumps each element so a newline in a command can't break out of the
+    # comment into a live directive (the ENTRYPOINT line itself is exec-form).
+    cmds_repr = ", ".join(json.dumps(c) for c in layer.commands)
     return [f"# entrypoint([{cmds_repr}])", f"ENTRYPOINT {json.dumps(list(layer.commands))}"]
 
 
 def _render_expose(layer: Expose) -> list[str]:
-    ports_repr = ", ".join(str(p) for p in layer.ports)
-    return [f"# expose({ports_repr})", f"EXPOSE {' '.join(str(p) for p in layer.ports)}"]
+    ports = [validate_int(p, field="expose port") for p in layer.ports]
+    ports_repr = ", ".join(str(p) for p in ports)
+    return [f"# expose({ports_repr})", f"EXPOSE {' '.join(str(p) for p in ports)}"]
 
 
 def _render_cmd(layer: Cmd) -> list[str]:
     if layer.commands is None:
         return ["# cmd(None)"]
-    cmds_repr = ", ".join(f'"{c}"' for c in layer.commands)
+    cmds_repr = ", ".join(json.dumps(c) for c in layer.commands)
     return [f"# cmd([{cmds_repr}])", f"CMD {json.dumps(list(layer.commands))}"]
 
 
 def _render_volume(layer: Volume) -> list[str]:
-    paths_repr = ", ".join(f'"{p}"' for p in layer.paths)
+    paths_repr = ", ".join(json.dumps(p) for p in layer.paths)
     return [f"# volume({paths_repr})", f"VOLUME {json.dumps(list(layer.paths))}"]
 
 
 def _render_copy(layer: Copy) -> list[str]:
+    src = validate_path(layer.src, field="copy src")
+    dest = validate_path(layer.dest, field="copy dest")
     return [
-        f'# copy("{layer.src}", "{layer.dest}")',
-        f"COPY {layer.src} {layer.dest}",
+        f'# copy("{src}", "{dest}")',
+        f"COPY {src} {dest}",
     ]
 
 
 def _render_copy_from_stage(layer: CopyFromStage) -> list[str]:
+    stage_name = validate_name(layer.stage_name, field="copy_from_stage stage name")
+    src = validate_path(layer.src, field="copy_from_stage src")
+    dest = validate_path(layer.dest, field="copy_from_stage dest")
     return [
-        f'# copy_from_stage("{layer.stage_name}", "{layer.src}", "{layer.dest}")',
-        f"COPY --from={layer.stage_name} {layer.src} {layer.dest}",
+        f'# copy_from_stage("{stage_name}", "{src}", "{dest}")',
+        f"COPY --from={stage_name} {src} {dest}",
     ]
 
 
 def _render_nvm_install(layer: NvmInstall, ctx: RenderContext) -> list[str]:
-    version = layer.version
+    version = validate_version(layer.version, field="nvm version")
     # If we're still root at this point, a later .user() may switch to a
     # non-root account that needs to run the installed node/npm/npx. /root
     # is mode 0700 (unreadable by others), so installing under ctx.home
@@ -596,6 +612,15 @@ def _render_pacman_install(layer: PacmanInstall) -> list[str]:
         f"# pacman_install({pkgs_repr})",
         _exec_run([], ["pacman", "-S", "--noconfirm", "--needed", *validated]),
         _exec_run([], ["pacman", "-Scc", "--noconfirm"]),
+    ]
+
+
+def _render_aur_install(layer: AurInstall) -> list[str]:
+    pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
+    return [
+        f"# aur_install({pkgs_repr})",
+        _exec_run([], ["yay", "-S", "--noconfirm", *validated]),
     ]
 
 

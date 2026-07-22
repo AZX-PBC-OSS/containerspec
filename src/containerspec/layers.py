@@ -44,6 +44,11 @@ class ZypperInstall(Layer):
 
 
 @dataclass(frozen=True)
+class AurInstall(Layer):
+    packages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class UvPipInstall(Layer):
     packages: tuple[str, ...]
 
@@ -187,6 +192,8 @@ def layer_payload(layer: Layer) -> dict[str, Any]:
         return {"type": "pacman_install", "packages": list(layer.packages)}
     if isinstance(layer, ZypperInstall):
         return {"type": "zypper_install", "packages": list(layer.packages)}
+    if isinstance(layer, AurInstall):
+        return {"type": "aur_install", "packages": list(layer.packages)}
     if isinstance(layer, UvPipInstall):
         return {"type": "uv_pip_install", "packages": list(layer.packages)}
     if isinstance(layer, PipInstall):

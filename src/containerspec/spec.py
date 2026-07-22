@@ -15,6 +15,7 @@ from containerspec.layers import (
     AddPython,
     ApkInstall,
     AptInstall,
+    AurInstall,
     BrewInstall,
     CargoInstall,
     Chown,
@@ -47,6 +48,7 @@ from containerspec.layers import (
 )
 from containerspec.renderers import render_dockerfile
 from containerspec.rootfs import MissingToolError
+from containerspec.validation import validate_image_ref, validate_int, validate_name
 
 if TYPE_CHECKING:
     from containerspec.targets import BuildTarget
@@ -142,6 +144,13 @@ class ImageSpec:
         return replace(self, stages=(*self.stages, stage))
 
     def add_python(self, version: str) -> ImageSpec:
+        """Install Python via uv and create a venv at /opt/venv.
+
+        ``version`` must be a single selector like ``"3.12"`` or
+        ``"pypy@3.10"``. uv's range-specifier syntax (``">=3.12,<3.13"``) is
+        intentionally rejected: the version renders into a shell-form ``RUN``
+        line, where ``<``/``>`` would be interpreted as redirections.
+        """
         return self._with(AddPython(version=version))
 
     def apt_install(self, *packages: str) -> ImageSpec:
@@ -196,15 +205,7 @@ class ImageSpec:
         """
         if not packages:
             raise ValueError("aur_install requires at least one package")
-        return self._with(
-            RunCommands(
-                commands=(
-                    " ".join(
-                        f"yay -S --noconfirm {' '.join(sorted(packages))}",
-                    ),
-                )
-            )
-        )
+        return self._with(AurInstall(packages=tuple(sorted(packages))))
 
     def zypper_install(self, *packages: str) -> ImageSpec:
         """Install packages via zypper (openSUSE). Sorted within layer."""
@@ -255,6 +256,12 @@ class ImageSpec:
         return self._with(RunCommands(commands=tuple(commands)))
 
     def workdir(self, path: str) -> ImageSpec:
+        """Set the working directory (WORKDIR).
+
+        The path must be a literal: ``$VAR`` expansion (e.g. ``WORKDIR
+        $APP_HOME``) is rejected because ``$`` is a shell metacharacter in the
+        chown/workdir path validator. Use the resolved literal path instead.
+        """
         return self._with(Workdir(path=path))
 
     def chown(self, path: str, *, uid: int | None = None, gid: int | None = None) -> ImageSpec:
@@ -339,7 +346,13 @@ class ImageSpec:
         return StageSpec(name=name, spec=self)
 
     def nvm_install(self, version: str) -> ImageSpec:
-        """Install Node.js via nvm. Symlinks node/npm/npx to /usr/local/bin."""
+        """Install Node.js via nvm. Symlinks node/npm/npx to /usr/local/bin.
+
+        ``version`` must be a concrete selector like ``"20"`` or
+        ``"lts/hydrogen"``. Globbed aliases (``"lts/*"``) are intentionally
+        rejected: the version renders into a shell-form ``RUN`` line, where
+        ``*`` would be shell-expanded.
+        """
         return self._with(NvmInstall(version=version))
 
     def npm_install(self, *packages: str) -> ImageSpec:
@@ -441,11 +454,13 @@ class ImageSpec:
             # "only one syntax parser directive can be used").
             stage_lines = stage_lines[1:]
             if stage_lines and stage_lines[0].startswith("FROM "):
-                stage_lines[0] = f"FROM {stage.spec.base} AS {stage.name}"
+                base = validate_image_ref(stage.spec.base, field="stage base image")
+                name = validate_name(stage.name, field="stage name")
+                stage_lines[0] = f"FROM {base} AS {name}"
             lines.extend(stage_lines)
             lines.append("")
 
-        lines.append(f"FROM {from_ref}")
+        lines.append(f"FROM {validate_image_ref(from_ref, field='base image')}")
         for i, layer in enumerate(self.layers):
             lines.append("")
             lines.extend(render_dockerfile(self, layer, i))
@@ -503,14 +518,20 @@ class ImageSpec:
 
     def resolve_chown_uid_gid(self, chown: Chown, *, index: int) -> tuple[int, int]:
         if chown.uid is not None and chown.gid is not None:
-            return chown.uid, chown.gid
+            return (
+                validate_int(chown.uid, field="chown uid"),
+                validate_int(chown.gid, field="chown gid"),
+            )
         if chown.uid is not None or chown.gid is not None:
             raise ValueError(
                 f'chown("{chown.path}"): uid and gid must both be specified or both omitted'
             )
         for layer in reversed(self.layers[:index]):
             if isinstance(layer, User):
-                return layer.uid, layer.gid
+                return (
+                    validate_int(layer.uid, field="chown uid (from user)"),
+                    validate_int(layer.gid, field="chown gid (from user)"),
+                )
         raise ValueError(
             f'chown("{chown.path}"): no preceding .user() layer. '
             f"Add .user() before .chown(), or specify uid/gid explicitly."

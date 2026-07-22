@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.6...v0.1.7) (2026-07-22)
+
+
+### Continuous Integration
+
+* local self-contained publish workflow with attestations off ([#26](https://github.com/AZX-PBC-OSS/containerspec/issues/26)) ([861f9d6](https://github.com/AZX-PBC-OSS/containerspec/commit/861f9d6e44d189eec9bed26914a5b7f8826c93ed))
+
 ## [0.1.6](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.5...v0.1.6) (2026-07-22)
 
 

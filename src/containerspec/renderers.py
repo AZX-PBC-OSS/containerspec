@@ -90,7 +90,7 @@ _PATH_PATTERN = re.compile(r"[A-Za-z0-9._/~*][A-Za-z0-9._/~*+-]*")
 # chown/workdir paths render into a shell-form RUN (or a directive that does not
 # expand), so glob ``*`` and ``~`` must NOT be allowed — the shell would expand
 # them at build time.
-_FS_PATH_PATTERN = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/-]*")
+_FS_PATH_PATTERN = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/+-]*")
 # Env var names: allow a leading underscore (``_JAVA_OPTIONS``).
 _ENV_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Image references (FROM): registry/repo:tag@digest — allow ``:`` and ``@``.
@@ -427,7 +427,9 @@ def _render_env(layer: Env) -> list[str]:
             raise ValueError(f"Invalid env value for {k!r}: control characters are not allowed")
         if v.endswith("\\"):
             raise ValueError(f"Invalid env value for {k!r}: a trailing backslash is not allowed")
-        if " " in v or '"' in v:
+        # Any interior backslash must go through the quoted branch, which escapes
+        # it — an unquoted ``ENV k=a\b`` is otherwise mangled by BuildKit's lexer.
+        if " " in v or '"' in v or "\\" in v:
             escaped = v.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'ENV {k}="{escaped}"')
         else:

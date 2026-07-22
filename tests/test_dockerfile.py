@@ -253,6 +253,16 @@ class TestDockerfile:
         with pytest.raises(ValueError):
             spec.to_dockerfile()
 
+    def test_fs_path_allows_plus(self) -> None:
+        """'+' is shell-inert, so chown/workdir paths like /opt/c++ must render."""
+        df = ImageSpec.from_registry("base", pin_digest=False).workdir("/opt/c++").to_dockerfile()
+        assert "WORKDIR /opt/c++" in df
+
+    def test_env_interior_backslash_is_quoted(self) -> None:
+        """A backslash in an env value must be escaped (quoted branch), not raw."""
+        df = ImageSpec.from_registry("base", pin_digest=False).env({"A": "a\\b"}).to_dockerfile()
+        assert 'ENV A="a\\\\b"' in df
+
     def test_env_key_allows_leading_underscore(self) -> None:
         """Common Unix env vars start with an underscore — must not be rejected."""
         df = ImageSpec.from_registry("base", pin_digest=False).env({"_JAVA_OPTIONS": "-Xmx1g"}).to_dockerfile()

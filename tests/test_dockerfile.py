@@ -136,6 +136,63 @@ class TestDockerfile:
         with pytest.raises(ValueError, match=r"no preceding \.user\(\) layer"):
             spec.to_dockerfile()
 
+    def test_user_name_rejects_shell_metacharacters(self) -> None:
+        """A user name with shell metacharacters must not reach a RUN command."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).user(
+            uid=1000, gid=1000, name="app; touch /pwned"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_add_python_version_rejects_shell_metacharacters(self) -> None:
+        """An add_python version with shell metacharacters must not reach a RUN command."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).add_python("3.12; touch /pwned")
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_chown_path_rejects_shell_metacharacters(self) -> None:
+        """A chown path with shell metacharacters must not reach a RUN command."""
+        spec = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .user(uid=1000, gid=1000, name="app")
+            .chown("/data; touch /pwned")
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_workdir_rejects_shell_metacharacters(self) -> None:
+        """A workdir path with shell metacharacters must not reach the Dockerfile."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).workdir("/app\nUSER root")
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_nvm_version_rejects_shell_metacharacters(self) -> None:
+        """An nvm version with shell metacharacters must not reach a RUN command."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).nvm_install("20; touch /pwned")
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_copy_dest_rejects_newline_injection(self) -> None:
+        """A copy dest with a newline must not inject a Dockerfile directive."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).copy(
+            "app.py", "/app\nUSER root", content_hash="sha256:abc"
+        )
+        with pytest.raises(ValueError):
+            spec.to_dockerfile()
+
+    def test_ordinary_paths_and_names_still_render(self) -> None:
+        """Legitimate names and paths must not be rejected by the validation."""
+        spec = (
+            ImageSpec.from_registry("base", pin_digest=False)
+            .add_python("3.12")
+            .workdir("/app")
+            .user(uid=1000, gid=1000, name="warden")
+            .chown("/home/warden/.cache")
+        )
+        df = spec.to_dockerfile()
+        assert "chown -R 1000:1000 /home/warden/.cache" in df
+        assert "WORKDIR /app" in df
+
     def test_brew_install(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).brew_install("jq")
         df = spec.to_dockerfile()

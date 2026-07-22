@@ -72,6 +72,39 @@ def validate_package(name: str) -> str:
     return name
 
 
+# Identifier-like fields (user names, tool versions) render into shell-form RUN
+# lines, so they must never carry shell metacharacters. Narrow allowlist.
+_IDENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+# Path fields (chown/workdir/copy) render into RUN commands and COPY/WORKDIR
+# directives. Allow the path separator and common path chars; reject spaces,
+# newlines, and shell metacharacters that would break out or inject a directive.
+_PATH_PATTERN = re.compile(r"^[A-Za-z0-9/~][A-Za-z0-9._/~+-]*$")
+
+
+def validate_identifier(value: str, *, field: str) -> str:
+    """Validate an identifier-like field (user name, version) against injection."""
+    if not value:
+        raise ValueError(f"{field} cannot be empty")
+    if not _IDENT_PATTERN.match(value):
+        raise ValueError(
+            f"Invalid {field}: {value!r}. Must match {_IDENT_PATTERN.pattern} "
+            f"— shell metacharacters are not allowed"
+        )
+    return value
+
+
+def validate_path(value: str, *, field: str) -> str:
+    """Validate a filesystem-path field against shell/directive injection."""
+    if not value:
+        raise ValueError(f"{field} cannot be empty")
+    if not _PATH_PATTERN.match(value):
+        raise ValueError(
+            f"Invalid {field}: {value!r}. Must match {_PATH_PATTERN.pattern} "
+            f"— shell metacharacters and whitespace are not allowed"
+        )
+    return value
+
+
 def _exec_run(mounts: list[str], args: list[str]) -> str:
     """Render an exec-form RUN line with optional BuildKit cache ``mounts``.
 
@@ -265,11 +298,12 @@ def render_layer(spec: ImageSpec, layer: Layer, index: int, ctx: RenderContext) 
 
 
 def _render_add_python(layer: AddPython) -> list[str]:
+    version = validate_identifier(layer.version, field="add_python version")
     return [
-        f'# add_python("{layer.version}")',
+        f'# add_python("{version}")',
         "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/",
         "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
-        f"RUN uv python install {layer.version} && uv venv --python {layer.version} /opt/venv",
+        f"RUN uv python install {version} && uv venv --python {version} /opt/venv",
         "ENV PATH=/opt/venv/bin:$PATH",
         "ENV VIRTUAL_ENV=/opt/venv",
     ]
@@ -368,13 +402,14 @@ def _render_run_commands(layer: RunCommands) -> list[str]:
 
 
 def _render_workdir(layer: Workdir) -> list[str]:
-    return [f'# workdir("{layer.path}")', f"WORKDIR {layer.path}"]
+    path = validate_path(layer.path, field="workdir path")
+    return [f'# workdir("{path}")', f"WORKDIR {path}"]
 
 
 def _render_chown(spec: ImageSpec, layer: Chown, index: int, ctx: RenderContext) -> list[str]:
     """Render chown with USER root sandwich when non-root user is active."""
     uid, gid = spec.resolve_chown_uid_gid(layer, index=index)
-    path = layer.path
+    path = validate_path(layer.path, field="chown path")
     source = " from preceding .user()" if layer.uid is None and layer.gid is None else ""
     lines: list[str] = [f'# chown("{path}") — resolved to uid={uid}, gid={gid}{source}']
 
@@ -395,10 +430,11 @@ def _render_user(layer: User, ctx: RenderContext) -> list[str]:
         or ctx.distro
     )
     profile = get_profile(effective_distro if effective_distro else "debian")
-    group_cmd = profile.group_add.format(gid=layer.gid, name=layer.name)
-    user_cmd = profile.user_add.format(uid=layer.uid, gid=layer.gid, name=layer.name)
+    name = validate_identifier(layer.name, field="user name")
+    group_cmd = profile.group_add.format(gid=layer.gid, name=name)
+    user_cmd = profile.user_add.format(uid=layer.uid, gid=layer.gid, name=name)
     return [
-        f'# user(uid={layer.uid}, gid={layer.gid}, name="{layer.name}")',
+        f'# user(uid={layer.uid}, gid={layer.gid}, name="{name}")',
         f"RUN {group_cmd} && {user_cmd}",
         f"USER {layer.uid}:{layer.gid}",
     ]
@@ -429,9 +465,11 @@ def _render_volume(layer: Volume) -> list[str]:
 
 
 def _render_copy(layer: Copy) -> list[str]:
+    src = validate_path(layer.src, field="copy src")
+    dest = validate_path(layer.dest, field="copy dest")
     return [
-        f'# copy("{layer.src}", "{layer.dest}")',
-        f"COPY {layer.src} {layer.dest}",
+        f'# copy("{src}", "{dest}")',
+        f"COPY {src} {dest}",
     ]
 
 
@@ -443,7 +481,7 @@ def _render_copy_from_stage(layer: CopyFromStage) -> list[str]:
 
 
 def _render_nvm_install(layer: NvmInstall, ctx: RenderContext) -> list[str]:
-    version = layer.version
+    version = validate_identifier(layer.version, field="nvm version")
     # If we're still root at this point, a later .user() may switch to a
     # non-root account that needs to run the installed node/npm/npx. /root
     # is mode 0700 (unreadable by others), so installing under ctx.home

@@ -114,11 +114,16 @@ class TestImageSpecHash:
         h = spec.content_hash(client=None)
         assert len(h) == 64  # works, doesn't raise
 
-    def test_distro_inferred_keeps_hash_stable(self) -> None:
-        """Leaving distro inferred (the default) does not change the hash."""
-        a = ImageSpec.from_registry("base", pin_digest=False).apt_install("git")
-        b = ImageSpec.from_registry("base", pin_digest=False).apt_install("git")
-        assert a.content_hash(client=None) == b.content_hash(client=None)
+    def test_inferred_distro_absent_from_payload(self) -> None:
+        """An inferred (unset) distro must not enter the payload, preserving hashes.
+
+        Pins the conditional inclusion: if distro were added unconditionally
+        (as ``"distro": null``), every existing no-distro spec's hash would shift
+        and miss its cache. The golden-hash test locks the concrete value; this
+        pins the mechanism.
+        """
+        spec = ImageSpec.from_registry("base", pin_digest=False).apt_install("git")
+        assert "distro" not in spec._canonical_payload(client=None)
 
     def test_explicit_distro_feeds_hash(self) -> None:
         """Setting distro explicitly is part of the cache key (it drives rendering)."""

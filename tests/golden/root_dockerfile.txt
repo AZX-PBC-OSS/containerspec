@@ -8,8 +8,8 @@ ENV PATH=/opt/venv/bin:$PATH
 ENV VIRTUAL_ENV=/opt/venv
 
 # uv_pip_install("vllm")
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    UV_LINK_MODE=copy uv pip install vllm
+ENV UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked ["uv", "pip", "install", "vllm"]
 
 # env({"HF_HOME": "/root/.cache/huggingface"})
 ENV HF_HOME=/root/.cache/huggingface

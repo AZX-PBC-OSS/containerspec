@@ -52,9 +52,11 @@ class TestPureDockerfileGeneration:
         assert "# syntax=docker/dockerfile:1.7" in df
         assert "FROM python:3.12-slim" in df
         assert "ENV VIRTUAL_ENV=/opt/venv" in df
-        assert "apt-get install" in df
-        assert "uv pip install" in df
-        assert "pip install" in df
+        # Install renderers use exec form (JSON arrays), so the command tokens
+        # appear as JSON-quoted strings rather than space-separated shell words.
+        assert '"apt-get", "install"' in df
+        assert '"uv", "pip", "install"' in df
+        assert '"pip", "install"' in df
         assert "WORKDIR /app" in df
         assert "USER root" in df
         assert "USER 1000:1000" in df

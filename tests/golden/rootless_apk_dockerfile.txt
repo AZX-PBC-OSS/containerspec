@@ -2,8 +2,7 @@
 FROM alpine:3.20
 
 # apk_install("openrc", "util-linux")
-RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
-    apk add --no-cache openrc util-linux
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked ["apk", "add", "--no-cache", "openrc", "util-linux"]
 
 # run_commands("ln -s agetty /etc/init.d/agetty.ttyS0")
 RUN ln -s agetty /etc/init.d/agetty.ttyS0

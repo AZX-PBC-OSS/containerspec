@@ -127,8 +127,12 @@ class TestRenderContextToolPaths:
     def test_pnpm_mount_on_run_line(self) -> None:
         spec = ImageSpec.from_registry("base", pin_digest=False).pnpm_install("react")
         df = spec.to_dockerfile()
-        pnpm_line = next(line for line in df.split("\n") if "pnpm" in line and "RUN" in line)
-        assert "--mount=type=cache" in pnpm_line
+        # pnpm_install splits into a bootstrap RUN and an "add" RUN; the cache
+        # mount lives on the "pnpm add" line (the pnpm store), not the bootstrap.
+        pnpm_add_line = next(
+            line for line in df.split("\n") if "pnpm" in line and "--mount=type=cache" in line
+        )
+        assert '"pnpm", "add"' in pnpm_add_line
 
     def test_brew_writes_shellenv_to_user_home(self) -> None:
         spec = (

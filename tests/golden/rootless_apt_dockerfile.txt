@@ -8,17 +8,16 @@ ENV PATH=/opt/venv/bin:$PATH
 ENV VIRTUAL_ENV=/opt/venv
 
 # apt_install("build-essential", "git")
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends build-essential git
+ENV DEBIAN_FRONTEND=noninteractive
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked ["apt-get", "update"]
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked ["apt-get", "install", "-y", "--no-install-recommends", "build-essential", "git"]
 
 # uv_pip_install("flashinfer==0.2.0", "vllm")
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    UV_LINK_MODE=copy uv pip install flashinfer==0.2.0 vllm
+ENV UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked ["uv", "pip", "install", "flashinfer==0.2.0", "vllm"]
 
 # pip_install("huggingface_hub[hf_transfer]")
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install --no-cache-dir huggingface_hub[hf_transfer]
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked ["pip", "install", "--no-cache-dir", "huggingface_hub[hf_transfer]"]
 
 # env({"HF_HOME": "/home/warden/.cache/huggingface", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
 ENV HF_HOME=/home/warden/.cache/huggingface

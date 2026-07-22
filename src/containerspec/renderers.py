@@ -52,7 +52,13 @@ if TYPE_CHECKING:
 NVM_VERSION = "0.40.6"
 NVM_INSTALL_SCRIPT = f"https://raw.githubusercontent.com/nvm-sh/nvm/v{NVM_VERSION}/install.sh"
 
-_PKG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:=@~/\[\]-]*$")
+# Defense-in-depth: rejects shell metacharacters (;, |, &, $, backtick, parens,
+# braces, spaces, quotes, glob chars) that would be dangerous if ever rendered
+# into shell-form RUN. PEP 508 / npm semver characters (>=, <, >, !, ~, ,, ^, #)
+# and a leading @ (npm scoped packages) are allowed because install renderers
+# emit exec-form RUN, which bypasses the shell entirely — arguments are passed
+# as literal JSON-array strings with no shell interpretation.
+_PKG_PATTERN = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._+:=@~/\[\]<>!~,^#-]*$")
 
 
 def validate_package(name: str) -> str:
@@ -64,6 +70,18 @@ def validate_package(name: str) -> str:
             f"Invalid package name: {name!r}. Package names must match {_PKG_PATTERN.pattern}"
         )
     return name
+
+
+def _exec_run(mounts: list[str], args: list[str]) -> str:
+    """Render an exec-form RUN line with optional BuildKit cache ``mounts``.
+
+    Exec form (``RUN ["cmd", "arg"]``) bypasses the shell completely — the JSON
+    array elements are passed to ``exec`` as literal strings, so no shell
+    quoting is needed and version specifiers like ``httpx>=0.27.0`` are safe.
+    ``mounts`` are ``--mount=type=cache,...`` flags that BuildKit parses before
+    the exec array.
+    """
+    return " ".join(["RUN", *mounts, json.dumps(args)])
 
 
 @dataclass
@@ -242,56 +260,75 @@ def _render_add_python(layer: AddPython) -> list[str]:
 
 
 def _render_apt_install(layer: AptInstall) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
+    mounts = [
+        "--mount=type=cache,target=/var/cache/apt,sharing=locked",
+        "--mount=type=cache,target=/var/lib/apt,sharing=locked",
+    ]
+    # Split update/install into separate exec-form RUN lines so no shell is
+    # invoked. DEBIAN_FRONTEND persists via ENV for all subsequent layers.
+    # Both mounts appear on each line: /var/lib/apt is a shared BuildKit cache,
+    # so update writes the apt lists into it and install reads from the same
+    # cache (mounting it only on install would shadow the fresh lists).
     return [
         f"# apt_install({pkgs_repr})",
-        "RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \\\n"
-        "    --mount=type=cache,target=/var/lib/apt,sharing=locked \\\n"
-        f"    DEBIAN_FRONTEND=noninteractive apt-get update && "
-        f"apt-get install -y --no-install-recommends {pkgs}",
+        "ENV DEBIAN_FRONTEND=noninteractive",
+        _exec_run(mounts, ["apt-get", "update"]),
+        _exec_run(mounts, ["apt-get", "install", "-y", "--no-install-recommends", *validated]),
     ]
 
 
 def _render_apk_install(layer: ApkInstall) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     return [
         f"# apk_install({pkgs_repr})",
-        "RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \\\n"
-        f"    apk add --no-cache {pkgs}",
+        _exec_run(
+            ["--mount=type=cache,target=/var/cache/apk,sharing=locked"],
+            ["apk", "add", "--no-cache", *validated],
+        ),
     ]
 
 
 def _render_dnf_install(layer: DnfInstall) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     return [
         f"# dnf_install({pkgs_repr})",
-        "RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \\\n"
-        f"    dnf install -y {pkgs} && dnf clean all",
+        _exec_run(
+            ["--mount=type=cache,target=/var/cache/dnf,sharing=locked"],
+            ["dnf", "install", "-y", *validated],
+        ),
+        _exec_run([], ["dnf", "clean", "all"]),
     ]
 
 
 def _render_uv_pip_install(layer: UvPipInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     cache = ctx.uv_cache()
+    # UV_LINK_MODE persists via ENV for subsequent layers (standard pattern).
     return [
         f"# uv_pip_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={cache},sharing=locked \\\n"
-        f"    UV_LINK_MODE=copy uv pip install {pkgs}",
+        "ENV UV_LINK_MODE=copy",
+        _exec_run(
+            [f"--mount=type=cache,target={cache},sharing=locked"],
+            ["uv", "pip", "install", *validated],
+        ),
     ]
 
 
 def _render_pip_install(layer: PipInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     cache = ctx.pip_cache()
     return [
         f"# pip_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={cache},sharing=locked \\\n"
-        f"    pip install --no-cache-dir {pkgs}",
+        _exec_run(
+            [f"--mount=type=cache,target={cache},sharing=locked"],
+            ["pip", "install", "--no-cache-dir", *validated],
+        ),
     ]
 
 
@@ -409,41 +446,49 @@ def _render_nvm_install(layer: NvmInstall, ctx: RenderContext) -> list[str]:
 
 
 def _render_npm_install(layer: NpmInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     cache = ctx.npm_cache()
     return [
         f"# npm_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={cache},sharing=locked \\\n    npm install -g {pkgs}",
+        _exec_run(
+            [f"--mount=type=cache,target={cache},sharing=locked"],
+            ["npm", "install", "-g", *validated],
+        ),
     ]
 
 
 def _render_pnpm_install(layer: PnpmInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     store = ctx.pnpm_store()
+    # Split: install pnpm itself, then add packages with the pnpm store cache.
     return [
         f"# pnpm_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={store},sharing=locked \\\n"
-        f"    npm install -g pnpm && pnpm add -g {pkgs}",
+        _exec_run([], ["npm", "install", "-g", "pnpm"]),
+        _exec_run(
+            [f"--mount=type=cache,target={store},sharing=locked"],
+            ["pnpm", "add", "-g", *validated],
+        ),
     ]
 
 
 def _render_brew_install(layer: BrewInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     brew_prefix = "/home/linuxbrew/.linuxbrew"
-    shellenv = f'eval "$({brew_prefix}/bin/brew shellenv)"'
+    # The Homebrew setup script is the library's own code (no user input), so it
+    # stays shell-form. The package install is exec-form: ENV PATH puts brew on
+    # PATH for the subsequent exec-form RUN, so no shell is needed to find it.
     return [
         f"# brew_install({pkgs_repr})",
         'SHELL ["/bin/bash", "-o", "pipefail", "-c"]',
         "RUN if ! command -v brew &>/dev/null; then \\\n"
         '    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; \\\n'
         f"    echo 'eval \"$({brew_prefix}/bin/brew shellenv)\"' >> {ctx.home}/.bashrc; \\\n"
-        "fi && \\\n"
-        f"    {shellenv} && \\\n"
-        f"    brew install {pkgs}",
+        "fi",
         f"ENV PATH={brew_prefix}/bin:$PATH",
+        _exec_run([], ["brew", "install", *validated]),
     ]
 
 
@@ -458,70 +503,85 @@ def _render_rust_install(ctx: RenderContext) -> list[str]:
 
 
 def _render_cargo_install(layer: CargoInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     registry = ctx.cargo_registry()
     git = ctx.cargo_git()
     return [
         f"# cargo_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={registry},sharing=locked \\\n"
-        f"    --mount=type=cache,target={git},sharing=locked \\\n"
-        f"    cargo install {pkgs}",
+        _exec_run(
+            [
+                f"--mount=type=cache,target={registry},sharing=locked",
+                f"--mount=type=cache,target={git},sharing=locked",
+            ],
+            ["cargo", "install", *validated],
+        ),
     ]
 
 
 def _render_uvx_install(layer: UvxInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     cache = ctx.uv_cache()
     return [
         f"# uvx_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={cache},sharing=locked \\\n    uvx --system {pkgs}",
+        _exec_run(
+            [f"--mount=type=cache,target={cache},sharing=locked"],
+            ["uvx", "--system", *validated],
+        ),
     ]
 
 
 def _render_pacman_install(layer: PacmanInstall) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     return [
         f"# pacman_install({pkgs_repr})",
-        f"RUN pacman -S --noconfirm --needed {pkgs} && pacman -Scc --noconfirm",
+        _exec_run([], ["pacman", "-S", "--noconfirm", "--needed", *validated]),
+        _exec_run([], ["pacman", "-Scc", "--noconfirm"]),
     ]
 
 
 def _render_zypper_install(layer: ZypperInstall) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     return [
         f"# zypper_install({pkgs_repr})",
-        f"RUN zypper install -y {pkgs} && zypper clean -a",
+        _exec_run([], ["zypper", "install", "-y", *validated]),
+        _exec_run([], ["zypper", "clean", "-a"]),
     ]
 
 
 def _render_yarn_install(layer: YarnInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     cache = f"{ctx.home}/.cache/yarn"
     return [
         f"# yarn_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={cache},sharing=locked \\\n    yarn global add {pkgs}",
+        _exec_run(
+            [f"--mount=type=cache,target={cache},sharing=locked"],
+            ["yarn", "global", "add", *validated],
+        ),
     ]
 
 
 def _render_gem_install(layer: GemInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     return [
         f"# gem_install({pkgs_repr})",
-        f"RUN gem install {pkgs}",
+        _exec_run([], ["gem", "install", *validated]),
     ]
 
 
 def _render_go_install(layer: GoInstall, ctx: RenderContext) -> list[str]:
-    pkgs = " ".join(validate_package(p) for p in layer.packages)
     pkgs_repr = ", ".join(f'"{p}"' for p in layer.packages)
+    validated = [validate_package(p) for p in layer.packages]
     cache = f"{ctx.home}/.cache/go-build"
     return [
         f"# go_install({pkgs_repr})",
-        f"RUN --mount=type=cache,target={cache},sharing=locked \\\n    go install {pkgs}",
+        _exec_run(
+            [f"--mount=type=cache,target={cache},sharing=locked"],
+            ["go", "install", *validated],
+        ),
     ]

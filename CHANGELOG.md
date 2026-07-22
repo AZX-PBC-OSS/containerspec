@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.3...v0.1.4) (2026-07-22)
+
+
+### Bug Fixes
+
+* idempotent user/group creation (groupadd/useradd || true) ([626fc30](https://github.com/AZX-PBC-OSS/containerspec/commit/626fc301e4c52c071a36433c4b18e8c0bcabae46))
+
 ## [0.1.3](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.2...v0.1.3) (2026-07-22)
 
 

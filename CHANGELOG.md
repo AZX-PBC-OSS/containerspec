@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.1...v0.1.2) (2026-07-22)
+
+
+### Bug Fixes
+
+* pass the staged Dockerfile to backends explicitly ([#4](https://github.com/AZX-PBC-OSS/containerspec/issues/4)) ([9b06c6a](https://github.com/AZX-PBC-OSS/containerspec/commit/9b06c6a51c2a3ebe65e0fb76bd3e44aa22606681))
+
 ## [0.1.1](https://github.com/AZX-PBC-OSS/containerspec/compare/v0.1.0...v0.1.1) (2026-07-22)
 
 

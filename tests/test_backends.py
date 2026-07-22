@@ -266,9 +266,62 @@ class TestBuildahBackend:
         push_cmd = list(mock_exec.call_args_list[1].args)
         assert push_cmd[0] == "buildah"
         assert "push" in push_cmd
-        assert "oci-archive" in push_cmd
+        assert "oci-archive:/tmp/tar.tar" in push_cmd
         assert "x:sha-abc" in push_cmd
-        assert "/tmp/tar.tar" in push_cmd
+
+    @patch("containerspec.backends.asyncio.create_subprocess_exec")
+    @pytest.mark.asyncio
+    async def test_oci_push_uses_valid_buildah_argv(self, mock_exec: MagicMock) -> None:
+        """buildah push must use `-f oci` (a manifest type) and an oci-archive: dest.
+
+        `-f oci-archive` is invalid (oci-archive is a transport, not a format),
+        and the destination needs the `oci-archive:` transport prefix or buildah
+        pushes to a registry instead of writing a tarball.
+        """
+        mock_exec.return_value = _ok_proc()
+        with patch("containerspec.rootfs.shutil.which", return_value="/usr/bin/buildah"):
+            await BuildahBackend().solve_and_export(
+                dockerfile="FROM base\n",
+                tag="x:sha-abc",
+                output_type="oci",
+                output_path="/tmp/tar.tar",
+                labels={},
+                pull=False,
+            )
+        push_cmd = list(mock_exec.call_args_list[1].args)
+        assert push_cmd == [
+            "buildah",
+            "push",
+            "-f",
+            "oci",
+            "x:sha-abc",
+            "oci-archive:/tmp/tar.tar",
+        ]
+
+    @patch("containerspec.backends.asyncio.create_subprocess_exec")
+    @pytest.mark.asyncio
+    async def test_oci_output_path_with_colon_raises(self, mock_exec: MagicMock) -> None:
+        """A ':' in the OCI output path would be mis-split by the oci-archive transport.
+
+        buildah's oci-archive:path[:reference] parses at the first colon, so a
+        colon in the path silently truncates it — reject before invoking buildah,
+        ahead of the build itself so the failure is instant.
+        """
+        mock_exec.return_value = _ok_proc()
+        with (
+            patch("containerspec.rootfs.shutil.which", return_value="/usr/bin/buildah"),
+            pytest.raises(BuildError, match="colon"),
+        ):
+            await BuildahBackend().solve_and_export(
+                dockerfile="FROM base\n",
+                tag="x:sha-abc",
+                output_type="oci",
+                output_path="/tmp/build:v2/out.tar",
+                labels={},
+                pull=False,
+            )
+        # Pure input validation — must fail before any buildah command runs.
+        mock_exec.assert_not_called()
 
     @patch("containerspec.backends.asyncio.create_subprocess_exec")
     @pytest.mark.asyncio

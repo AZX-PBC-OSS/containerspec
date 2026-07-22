@@ -98,13 +98,7 @@ class BuildKitBackend:
         pull: bool,
         context_path: str = ".",
     ) -> None:
-        context_dockerfile = Path(context_path) / "Dockerfile"
-        if context_dockerfile.exists():
-            dockerfile_path = str(context_dockerfile)
-            cleanup_dockerfile = False
-        else:
-            dockerfile_path = _write_dockerfile_temp(dockerfile)
-            cleanup_dockerfile = True
+        dockerfile_path = _write_dockerfile_temp(dockerfile)
         try:
             cmd: list[str] = ["docker", "buildx", "build"]
             if self.builder:
@@ -121,8 +115,7 @@ class BuildKitBackend:
             cmd.append(context_path)
             await _run_command(cmd, label="buildx")
         finally:
-            if cleanup_dockerfile:
-                Path(dockerfile_path).unlink(missing_ok=True)
+            Path(dockerfile_path).unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -230,13 +223,12 @@ class DockerBackend:
             "labels": labels,
         }
         if context_path and context_path != ".":
-            dockerfile_path = _write_dockerfile_temp(dockerfile)
-            try:
-                build_kwargs["dockerfile"] = dockerfile_path
-                build_kwargs["path"] = context_path
-                await asyncio.to_thread(self.client.images.build, **build_kwargs)
-            finally:
-                Path(dockerfile_path).unlink(missing_ok=True)
+            # The staged context is self-contained: _prepare_build_context wrote
+            # the rewritten Dockerfile into it, and the daemon resolves
+            # ``dockerfile`` relative to the context.
+            build_kwargs["dockerfile"] = "Dockerfile"
+            build_kwargs["path"] = context_path
+            await asyncio.to_thread(self.client.images.build, **build_kwargs)
         else:
             build_kwargs["fileobj"] = io.BytesIO(dockerfile.encode())
             await asyncio.to_thread(self.client.images.build, **build_kwargs)

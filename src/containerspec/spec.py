@@ -446,12 +446,16 @@ class ImageSpec:
             lines.extend(render_dockerfile(self, layer, i))
         return "\n".join(lines) + "\n"
 
-    def _prepare_build_context(self, dockerfile: str) -> str:
+    def _prepare_build_context(self, dockerfile: str) -> tuple[str, str]:
         """Create a build context directory from Copy layers across all stages.
 
         Collects Copy layers from the main spec AND all stage specs, copies their
         local sources into a temp context directory, and rewrites COPY paths in
         the Dockerfile to use context-relative paths.
+
+        Returns ``(context_path, effective_dockerfile)``. The effective
+        Dockerfile is the one backends must build: rewritten when a staged
+        context was created, the input unchanged otherwise.
         """
         import shutil
         import tempfile
@@ -467,7 +471,7 @@ class ImageSpec:
             )
 
         if not all_copy_layers:
-            return "."
+            return ".", dockerfile
 
         context_dir = tempfile.mkdtemp(prefix="containerspec-context-")
         rewritten_dockerfile = dockerfile
@@ -490,7 +494,7 @@ class ImageSpec:
         df_path = Path(context_dir) / "Dockerfile"
         df_path.write_text(rewritten_dockerfile)
 
-        return context_dir
+        return context_dir, rewritten_dockerfile
 
     def resolve_chown_uid_gid(self, chown: Chown, *, index: int) -> tuple[int, int]:
         if chown.uid is not None and chown.gid is not None:
@@ -546,7 +550,7 @@ class ImageSpec:
         dockerfile = self._to_build_dockerfile(client=client)
         pull = not self.pin_digest
 
-        context_path = self._prepare_build_context(dockerfile)
+        context_path, dockerfile = self._prepare_build_context(dockerfile)
 
         try:
             result = await target.export(

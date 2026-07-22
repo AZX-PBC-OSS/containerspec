@@ -1,6 +1,7 @@
 {
   "release-type": "python",
   "package-name": "containerspec",
+  "include-component-in-tag": false,
   "packages": {
     ".": {
       "component": "containerspec",
@@ -9,8 +10,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "src/containerspec/__init__.py",
-          "jsonpath": "$.__version__"
+          "path": "src/containerspec/__init__.py"
         }
       ]
     }

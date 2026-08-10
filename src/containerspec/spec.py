@@ -85,6 +85,19 @@ def _hash_path(path: str) -> str:
     return h.hexdigest()
 
 
+def _staged_name(src: str, *, basename: str) -> str:
+    """Name a source under the staged build context, deterministically.
+
+    The discriminator is a sha256 prefix of the source string exactly as it
+    appears in the spec — the same string the COPY rewrite keys on. Built-in
+    ``hash()`` cannot be used here: it is PYTHONHASHSEED-salted for ``str``, so
+    it would emit a different Dockerfile, and therefore a different image, on
+    every run of an otherwise identical build.
+    """
+    digest = hashlib.sha256(src.encode("utf-8")).hexdigest()[:8]
+    return f"ctx_{digest}_{basename}"
+
+
 @dataclass(frozen=True)
 class ImageSpec:
     """Fluent, immutable image specification.
@@ -495,17 +508,21 @@ class ImageSpec:
 
         context_dir = tempfile.mkdtemp(prefix="containerspec-context-")
         rewritten_dockerfile = dockerfile
+        staged: set[str] = set()
 
         for layer in all_copy_layers:
             src_path = Path(layer.src)
             if not src_path.exists():
                 continue
-            dest_name = f"ctx_{hash(layer.src) & 0xFFFFFFFF:08x}_{src_path.name}"
+            dest_name = _staged_name(layer.src, basename=src_path.name)
             ctx_dest = Path(context_dir) / dest_name
-            if src_path.is_dir():
-                shutil.copytree(src_path, ctx_dest)
-            else:
-                shutil.copy2(src_path, ctx_dest)
+            # The same source may be copied to several destinations; stage it once.
+            if dest_name not in staged:
+                staged.add(dest_name)
+                if src_path.is_dir():
+                    shutil.copytree(src_path, ctx_dest)
+                else:
+                    shutil.copy2(src_path, ctx_dest)
             rewritten_dockerfile = rewritten_dockerfile.replace(
                 f"COPY {layer.src} {layer.dest}",
                 f"COPY {dest_name} {layer.dest}",
@@ -609,6 +626,14 @@ class ImageSpec:
                 f"Build failed for {target.name}:sha-{hash_16}. "
                 f"Failed Dockerfile saved to {dockerfile_debug_path}",
             ) from e
+        finally:
+            # The staged context holds a full copy of the user's sources; it must
+            # not survive the build, success or failure.
+            if context_path != ".":
+                import shutil
+
+                shutil.rmtree(context_path, ignore_errors=True)
+                logger.debug("containerspec.context.cleaned", extra={"path": context_path})
         logger.info("containerspec.build.complete", extra={"hash": hash_16, "tag": tag})
         return result
 
